@@ -1,0 +1,85 @@
+# Visual Studio / .NET
+.vs/
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Dd]ebugPublic/
+[Rr]eleases/
+artifacts/
+.artifacts/
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Build / compiler output
+*.dll
+*.exe
+*.pdb
+*.cache
+*.log
+*.tlog
+*.tmp
+*.obj
+*.iobj
+*.ipdb
+*.pch
+*.ilk
+
+# NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+# Test results / coverage
+[Tt]est[Rr]esult*/
+*.trx
+coverage*.json
+coverage*.xml
+coverage*.info
+*.coverage
+*.coveragexml
+
+# ReSharper / Rider
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+.idea/
+
+# VS Code local settings
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+secrets.json
+appsettings.Local.json
+appsettings.Development.local.json
+
+# ASP.NET / publish
+publish/
+*.pubxml
+*.publishproj
+PublishScripts/
+
+# BenchmarkDotNet
+BenchmarkDotNet.Artifacts/
+
+# Local history
+.history/
+.vshistory/
+**/.localhistory/
