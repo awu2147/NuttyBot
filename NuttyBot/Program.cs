@@ -1,6 +1,5 @@
 ﻿using Discord;
 using Discord.WebSocket;
-using Newtonsoft.Json.Linq;
 using NuttyBot;
 using System.Collections;
 using System.Reflection;
@@ -19,6 +18,8 @@ namespace NuttyBot
         };
         private const ulong DestinationGuildId = 472949270857777152; //nutty
         private const ulong OwnerUserId = 150069097554509825; //mocktail
+        private const ulong YoinkAnnouncementChannelId = 472949270857777154; //nutty/general
+        private const string YoinkEmote = "<:evil_cat_smirk:1549875953914740846>";
 
         public static async Task Main()
         {
@@ -366,9 +367,31 @@ namespace NuttyBot
             using var stream = new MemoryStream(data);
             using var image = new Discord.Image(stream);
 
-            return await guild.CreateEmoteAsync(
+            var added = await guild.CreateEmoteAsync(
                 name,
                 image);
+
+            await PostYoinkAnnouncement(guild, added);
+
+            return added;
+        }
+
+        private static async Task PostYoinkAnnouncement(SocketGuild guild, GuildEmote emote)
+        {
+            var channel =
+                guild.GetTextChannel(YoinkAnnouncementChannelId);
+
+            if (channel == null)
+            {
+                Console.WriteLine(
+                    $"Could not find yoink announcement channel " +
+                    $"{YoinkAnnouncementChannelId}");
+
+                return;
+            }
+
+            await channel.SendMessageAsync(
+                $"{emote} `{emote.Name}` has been YOINKED and added to the server {YoinkEmote}.");
         }
 
         private record ReactionInfo(ulong Id, string Name, bool Animated, int Count);
@@ -493,18 +516,6 @@ namespace NuttyBot
             }
 
             return value;
-        }
-
-        private static JToken? GetPropertyIgnoreCase(
-            JObject obj,
-            string name)
-        {
-            return obj.Properties()
-                .FirstOrDefault(p =>
-                    p.Name.Equals(
-                        name,
-                        StringComparison.OrdinalIgnoreCase))
-                ?.Value;
         }
     }
 }
