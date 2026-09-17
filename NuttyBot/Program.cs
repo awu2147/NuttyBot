@@ -19,7 +19,8 @@ namespace NuttyBot
         };
         private const ulong DestinationGuildId = 472949270857777152; //nutty
         private const ulong OwnerUserId = 150069097554509825; //mocktail
-        private const ulong YoinkAnnouncementChannelId = 472949270857777154; //nutty/general
+        private const ulong YoinkAnnouncementChannelId = 1550204364583608452; //nutty/dev
+        //private const ulong YoinkAnnouncementChannelId = 472949270857777154; //nutty/dev
         private const string YoinkEmote = "<:evil_cat_smirk:1549875953914740846>";
 
         public static async Task Main()

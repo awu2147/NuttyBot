@@ -52,7 +52,7 @@ internal sealed class SlotGame : IDisposable
         }
 
         string lobbyId;
-        MessageComponent components;
+        MessageComponent view;
         ulong guildId = command.GuildId.Value;
         ulong userId = command.User.Id;
 
@@ -61,10 +61,12 @@ internal sealed class SlotGame : IDisposable
             ExpireSessions();
             ReleaseUserMachine(guildId, userId);
             lobbyId = CreateLobby(guildId, userId);
-            components = BuildLobbyButtons(guildId, userId, lobbyId);
+            view = BuildLobbyView(guildId, userId, lobbyId);
         }
 
-        await command.RespondAsync( BuildLobbyContent(), components: components);
+        await command.RespondAsync(
+            components: view,
+            flags: MessageFlags.ComponentsV2);
     }
 
     public async Task HandleButtonAsync(SocketMessageComponent component)
@@ -121,9 +123,9 @@ internal sealed class SlotGame : IDisposable
 
         ulong guildId = component.GuildId!.Value;
         string lobbyId = parts[4];
-        string? content = null;
-        MessageComponent? components = null;
+        MessageComponent? view = null;
         bool oldLobby = false;
+        string displayName = component.User is SocketGuildUser guildUser ? guildUser.DisplayName : component.User.Username;
 
         lock (_syncRoot)
         {
@@ -133,16 +135,14 @@ internal sealed class SlotGame : IDisposable
             {
                 oldLobby = true;
             }
-            else if (!TryClaimMachine(guildId, component.User.Id, machineNumber, out SlotMachine? machine))
+            else if (!TryClaimMachine(guildId, component.User.Id, displayName, machineNumber, out SlotMachine? machine))
             {
-                content = BuildLobbyContent();
-                components = BuildLobbyButtons(guildId, component.User.Id, lobbyId);
+                view = BuildLobbyView(guildId, component.User.Id, lobbyId);
             }
             else
             {
                 CloseLobby(guildId, component.User.Id);
-                content = Roll(machine!);
-                components = BuildMachineButtons(machine!);
+                view = Roll(machine!);
             }
         }
 
@@ -154,7 +154,7 @@ internal sealed class SlotGame : IDisposable
             return;
         }
 
-        await UpdateMessageAsync(component, content!, components!);
+        await UpdateMessageAsync(component, view!);
     }
 
     private async Task HandleRollAsync(SocketMessageComponent component, string[] parts)
@@ -162,8 +162,7 @@ internal sealed class SlotGame : IDisposable
         if (!TryParseMachineSession(parts, out int machineNumber, out string sessionId))
             return;
 
-        string? content = null;
-        MessageComponent? components = null;
+        MessageComponent? view = null;
         bool invalidSession;
 
         lock (_syncRoot)
@@ -179,8 +178,7 @@ internal sealed class SlotGame : IDisposable
 
             if (machine is not null)
             {
-                content = Roll(machine);
-                components = BuildMachineButtons(machine);
+                view = Roll(machine);
             }
         }
 
@@ -190,7 +188,7 @@ internal sealed class SlotGame : IDisposable
             return;
         }
 
-        await UpdateMessageAsync(component, content!, components!);
+        await UpdateMessageAsync(component, view!);
     }
 
     private async Task HandleLeaveAsync(SocketMessageComponent component, string[] parts)
@@ -198,7 +196,7 @@ internal sealed class SlotGame : IDisposable
         if (!TryParseMachineSession(parts, out int machineNumber, out string sessionId))
             return;
 
-        string? content = null;
+        MessageComponent? view = null;
         bool invalidSession;
 
         lock (_syncRoot)
@@ -214,9 +212,7 @@ internal sealed class SlotGame : IDisposable
 
             if (machine is not null)
             {
-                content =
-                    $"🎰 **Slot Machine #{machine.Number}** is now free.\n\n" +
-                    $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins";
+                view = BuildReleasedMachineView(machine);
                 ReleaseMachine(machine);
             }
         }
@@ -227,7 +223,7 @@ internal sealed class SlotGame : IDisposable
             return;
         }
 
-        await UpdateMessageAsync(component, content!, new ComponentBuilder().Build());
+        await UpdateMessageAsync(component, view!);
     }
 
     private async Task HandleReturnToLobbyAsync(SocketMessageComponent component, string[] parts)
@@ -237,7 +233,7 @@ internal sealed class SlotGame : IDisposable
 
         ulong guildId = component.GuildId!.Value;
         ulong userId = component.User.Id;
-        MessageComponent? components = null;
+        MessageComponent? view = null;
         bool invalidSession;
 
         lock (_syncRoot)
@@ -250,7 +246,7 @@ internal sealed class SlotGame : IDisposable
             {
                 ReleaseMachine(machine);
                 string lobbyId = CreateLobby(guildId, userId);
-                components = BuildLobbyButtons(guildId, userId, lobbyId);
+                view = BuildLobbyView(guildId, userId, lobbyId);
             }
         }
 
@@ -260,7 +256,7 @@ internal sealed class SlotGame : IDisposable
             return;
         }
 
-        await UpdateMessageAsync(component, BuildLobbyContent(), components!);
+        await UpdateMessageAsync(component, view!);
     }
 
     private async Task HandleLobbyRefreshAsync(SocketMessageComponent component, string[] parts)
@@ -276,7 +272,7 @@ internal sealed class SlotGame : IDisposable
 
         ulong guildId = component.GuildId!.Value;
         string lobbyId = parts[3];
-        MessageComponent? components = null;
+        MessageComponent? view = null;
         bool invalidLobby;
 
         lock (_syncRoot)
@@ -285,7 +281,7 @@ internal sealed class SlotGame : IDisposable
             invalidLobby = !IsCurrentLobby(guildId, component.User.Id, lobbyId);
 
             if (!invalidLobby)
-                components = BuildLobbyButtons(guildId, component.User.Id, lobbyId);
+                view = BuildLobbyView(guildId, component.User.Id, lobbyId);
         }
 
         if (invalidLobby)
@@ -296,7 +292,7 @@ internal sealed class SlotGame : IDisposable
             return;
         }
 
-        await UpdateMessageAsync(component, BuildLobbyContent(), components!);
+        await UpdateMessageAsync(component, view!);
     }
 
     private static bool TryParseMachineSession(
@@ -319,13 +315,11 @@ internal sealed class SlotGame : IDisposable
 
     private static Task UpdateMessageAsync(
         SocketMessageComponent component,
-        string content,
-        MessageComponent components)
+        MessageComponent view)
     {
         return component.UpdateAsync(message =>
         {
-            message.Content = content;
-            message.Components = components;
+            message.Components = view;
         });
     }
 
@@ -343,50 +337,105 @@ internal sealed class SlotGame : IDisposable
     private void CloseLobby(ulong guildId, ulong userId) =>
         _activeLobbies.Remove((guildId, userId));
 
-    private static string BuildLobbyContent() =>
-        "🎰 **Nutty Slots Lobby** 🎰\n\nChoose a slot machine:";
-
-    private MessageComponent BuildLobbyButtons(ulong guildId, ulong userId, string lobbyId)
+    private MessageComponent BuildLobbyView(
+     ulong guildId,
+     ulong userId,
+     string lobbyId)
     {
-        var builder = new ComponentBuilder();
+        var container = new ContainerBuilder()
+            .WithAccentColor(new Color(0, 200, 220))
+            .WithTextDisplay(
+                "## 🎰 Nutty Slots Lobby\n\n" +
+                "Choose an available machine:");
 
         foreach (SlotMachine machine in GetMachines(guildId))
         {
-            string statusEmoji = machine.IsClaimed ? "🔒" : "🟢";
-            builder.WithButton(
-                new ButtonBuilder()
-                    .WithLabel($"🎰 #{machine.Number} {statusEmoji}")
-                    .WithCustomId($"slots:claim:{machine.Number}:{userId}:{lobbyId}")
-                    .WithStyle(machine.IsClaimed ? ButtonStyle.Secondary : ButtonStyle.Primary)
-                    .WithDisabled(machine.IsClaimed));
+            string occupant = machine.IsClaimed
+                ? machine.OwnerDisplayName ?? "Unknown user"
+                : "Available";
+
+            var machineButton = new ButtonBuilder()
+                .WithCustomId(
+                    $"slots:claim:{machine.Number}:{userId}:{lobbyId}")
+                .WithStyle(
+                    machine.IsClaimed
+                        ? ButtonStyle.Secondary
+                        : ButtonStyle.Primary)
+                .WithEmote(new Emoji("🎰"))
+                .WithDisabled(machine.IsClaimed);
+
+            var occupantDisplay = new ButtonBuilder()
+                .WithLabel(occupant)
+                .WithCustomId($"slots:owner:{machine.Number}")
+                .WithStyle(ButtonStyle.Secondary)
+                .WithDisabled(true);
+
+            container.WithActionRow(
+                new ActionRowBuilder()
+                    .WithButton(machineButton)
+                    .WithButton(occupantDisplay));
         }
 
-        builder.WithButton(
-            "Refresh Lobby",
-            $"slots:refresh:{userId}:{lobbyId}",
-            ButtonStyle.Secondary,
-            emote: new Emoji("🔄"));
+        container.WithActionRow(
+            new ActionRowBuilder()
+                .WithButton(
+                    "Refresh Lobby",
+                    $"slots:refresh:{userId}:{lobbyId}",
+                    ButtonStyle.Secondary,
+                    emote: new Emoji("🔄")));
 
-        return builder.Build();
+        return new ComponentBuilderV2()
+            .WithContainer(container)
+            .Build();
     }
 
-    private static MessageComponent BuildMachineButtons(SlotMachine machine) =>
-        new ComponentBuilder()
+    private static MessageComponent BuildMachineView(
+        SlotMachine machine,
+        string machineDisplay,
+        string result)
+    {
+        var navigationButtons = new ActionRowBuilder()
+            .WithButton(
+                "Choose Machine",
+                $"slots:lobby:{machine.Number}:{machine.SessionId}",
+                ButtonStyle.Secondary,
+                emote: new Emoji("↩️"))
+            .WithButton(
+                "Leave Casino",
+                $"slots:leave:{machine.Number}:{machine.SessionId}",
+                ButtonStyle.Secondary,
+                emote: new Emoji("🚪"));
+
+        var rollButton = new ActionRowBuilder()
             .WithButton(
                 "Roll Again",
                 $"slots:roll:{machine.Number}:{machine.SessionId}",
                 ButtonStyle.Primary,
-                emote: new Emoji("🎰"))
-            .WithButton(
-                "Leave Machine",
-                $"slots:leave:{machine.Number}:{machine.SessionId}",
-                ButtonStyle.Secondary,
-                emote: new Emoji("🚪"))
-            .WithButton(
-                "Back to Lobby",
-                $"slots:lobby:{machine.Number}:{machine.SessionId}",
-                ButtonStyle.Secondary,
-                emote: new Emoji("↩️"))
+                emote: new Emoji("🎰"));
+
+        string display =
+            $"## 🎰 Slot Machine #{machine.Number}\n\n" +
+            $"```text\n{machineDisplay}\n```\n" +
+            $"{result}\n\n" +
+            $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins";
+
+        return new ComponentBuilderV2()
+            .WithContainer(container => container
+                .WithAccentColor(new Color(0, 200, 220))
+                .WithActionRow(navigationButtons)
+                .WithTextDisplay(display)
+                .WithActionRow(rollButton))
+            .Build();
+    }
+
+    private static MessageComponent BuildReleasedMachineView(SlotMachine machine) =>
+        new ComponentBuilderV2()
+            .WithContainer(container => container
+                .WithAccentColor(new Color(0, 200, 220))
+                .WithTextDisplay(
+                    $"## 🎰 Slot Machine #{machine.Number}\n\n" +
+                    "This machine is now free.\n\n" +
+                    $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins"))
             .Build();
 
     private List<SlotMachine> GetMachines(ulong guildId)
@@ -404,17 +453,21 @@ internal sealed class SlotGame : IDisposable
     private bool TryClaimMachine(
         ulong guildId,
         ulong userId,
+        string userDisplayName,
         int machineNumber,
         out SlotMachine? machine)
     {
-        machine = GetMachines(guildId).FirstOrDefault(x => x.Number == machineNumber);
+        machine = GetMachines(guildId)
+            .FirstOrDefault(x => x.Number == machineNumber);
 
         if (machine is null || machine.IsClaimed)
             return false;
 
         machine.OwnerUserId = userId;
+        machine.OwnerDisplayName = userDisplayName;
         machine.SessionId = Guid.NewGuid().ToString("N");
         machine.LastInteractionUtc = DateTimeOffset.UtcNow;
+
         return true;
     }
 
@@ -440,11 +493,12 @@ internal sealed class SlotGame : IDisposable
     private static void ReleaseMachine(SlotMachine machine)
     {
         machine.OwnerUserId = null;
+        machine.OwnerDisplayName = null;
         machine.SessionId = null;
         machine.LastInteractionUtc = default;
     }
 
-    private static string Roll(SlotMachine machine)
+    private static MessageComponent Roll(SlotMachine machine)
     {
         string[,] slots = new string[3, 3];
 
@@ -471,10 +525,7 @@ internal sealed class SlotGame : IDisposable
 
         string result = winner ? "🎉 **JACKPOT!** 🎉" : "Better luck next time!";
 
-        return
-            $"🎰 **Slot Machine #{machine.Number}** 🎰\n\n" +
-            $"{machineDisplay}\n\n{result}\n\n" +
-            $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins";
+        return BuildMachineView(machine, machineDisplay, result);
     }
 
     private void ExpireSessions()
@@ -492,6 +543,7 @@ internal sealed class SlotGame : IDisposable
     {
         public int Number { get; } = number;
         public ulong? OwnerUserId { get; set; }
+        public string? OwnerDisplayName { get; set; }
         public string? SessionId { get; set; }
         public DateTimeOffset LastInteractionUtc { get; set; }
         public int TotalRolls { get; set; }
