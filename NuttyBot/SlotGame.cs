@@ -15,10 +15,7 @@ internal sealed class SlotGame : IDisposable
     private readonly Dictionary<(ulong GuildId, ulong UserId), string> _activeLobbies = [];
     private Timer? _cleanupTimer;
 
-    public static SlashCommandBuilder CreateCommand() =>
-        new SlashCommandBuilder()
-            .WithName("rollslots")
-            .WithDescription("Open the slot machine lobby");
+    public static SlashCommandBuilder CreateCommand() => new SlashCommandBuilder().WithName("slots").WithDescription("Open the slot machine lobby");
 
     public void Start()
     {
@@ -149,7 +146,7 @@ internal sealed class SlotGame : IDisposable
         if (oldLobby)
         {
             await component.RespondAsync(
-                "That slot lobby is no longer active. Use `/rollslots` again.",
+                "That slot lobby is no longer active. Use `/slots` again.",
                 ephemeral: true);
             return;
         }
@@ -287,7 +284,7 @@ internal sealed class SlotGame : IDisposable
         if (invalidLobby)
         {
             await component.RespondAsync(
-                "That slot lobby is no longer active. Use `/rollslots` again.",
+                "That slot lobby is no longer active. Use `/slots` again.",
                 ephemeral: true);
             return;
         }
@@ -345,7 +342,7 @@ internal sealed class SlotGame : IDisposable
         var container = new ContainerBuilder()
             .WithAccentColor(new Color(0, 200, 220))
             .WithTextDisplay(
-                "## 🎰 Nutty Slots Lobby\n\n" +
+                "## 🎰 Nutty Slots 🎰\n\n" +
                 "Choose an available machine:");
 
         foreach (SlotMachine machine in GetMachines(guildId))

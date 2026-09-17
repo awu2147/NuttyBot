@@ -154,9 +154,19 @@ namespace NuttyBot
                     await guild.CreateApplicationCommandAsync(addEmojiCommand.Build());
                 }
 
-                if (!existingCommands.Any(x => x.Name == "rollslots"))
+                if (!existingCommands.Any(x => x.Name == "slots"))
                 {
                     await guild.CreateApplicationCommandAsync(slotCommand.Build());
+                }
+
+                var oldSlotCommand = existingCommands.FirstOrDefault(x => x.Name == "rollslots");
+
+                if (oldSlotCommand != null)
+                {
+                    await oldSlotCommand.DeleteAsync();
+
+                    Console.WriteLine(
+                        $"Removed /rollslots from {guild.Name}.");
                 }
 
             }
@@ -175,7 +185,7 @@ namespace NuttyBot
                     await HandleAddEmoji(command);
                     break;
 
-                case "rollslots":
+                case "slots":
                     await Slots.HandleSlashCommandAsync(command);
                     break;
             }
