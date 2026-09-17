@@ -6,6 +6,8 @@ namespace NuttyBot;
 internal sealed class SlotGame : IDisposable
 {
     private const int MachineCount = 5;
+    private const int SpinCost = 1;
+    private const int WinPayout = 100;
     private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromSeconds(5);
     private static readonly string[] Symbols = ["🍒", "🍋", "🍊", "🍇", "⭐"];
@@ -13,6 +15,7 @@ internal sealed class SlotGame : IDisposable
     private readonly object _syncRoot = new();
     private readonly Dictionary<ulong, List<SlotMachine>> _machinesByGuild = [];
     private readonly Dictionary<(ulong GuildId, ulong UserId), string> _activeLobbies = [];
+    private readonly Dictionary<(ulong GuildId, ulong UserId), PlayerData> _players = [];
     private Timer? _cleanupTimer;
 
     public static SlashCommandBuilder CreateCommand() => new SlashCommandBuilder().WithName("slots").WithDescription("Open the slot machine lobby");
@@ -122,6 +125,8 @@ internal sealed class SlotGame : IDisposable
         string lobbyId = parts[4];
         MessageComponent? view = null;
         bool oldLobby = false;
+        bool insufficientFunds = false;
+        int currentBalance = 0;
         string displayName = component.User is SocketGuildUser guildUser ? guildUser.DisplayName : component.User.Username;
 
         lock (_syncRoot)
@@ -132,6 +137,12 @@ internal sealed class SlotGame : IDisposable
             {
                 oldLobby = true;
             }
+            else if (!GetPlayer(guildId, component.User.Id).CanAfford(SpinCost))
+            {
+                PlayerData player = GetPlayer(guildId, component.User.Id);
+                insufficientFunds = true;
+                currentBalance = player.Balance;
+            }
             else if (!TryClaimMachine(guildId, component.User.Id, displayName, machineNumber, out SlotMachine? machine))
             {
                 view = BuildLobbyView(guildId, component.User.Id, lobbyId);
@@ -139,7 +150,16 @@ internal sealed class SlotGame : IDisposable
             else
             {
                 CloseLobby(guildId, component.User.Id);
-                view = Roll(machine!);
+                SlotMachine claimedMachine = machine!;
+                PlayerData player = GetPlayer(guildId, component.User.Id);
+                claimedMachine.Message = component.Message;
+                claimedMachine.Player = player;
+                view = BuildMachineView(
+                    claimedMachine,
+                    player,
+                    machineDisplay: BuildIdleMachineDisplay(),
+                    result: "Press **Spin** when you're ready.",
+                    spinButtonLabel: "Spin");
             }
         }
 
@@ -148,6 +168,12 @@ internal sealed class SlotGame : IDisposable
             await component.RespondAsync(
                 "That slot lobby is no longer active. Use `/slots` again.",
                 ephemeral: true);
+            return;
+        }
+
+        if (insufficientFunds)
+        {
+            await RespondInsufficientFundsAsync(component, currentBalance);
             return;
         }
 
@@ -161,6 +187,8 @@ internal sealed class SlotGame : IDisposable
 
         MessageComponent? view = null;
         bool invalidSession;
+        bool insufficientFunds = false;
+        int currentBalance = 0;
 
         lock (_syncRoot)
         {
@@ -175,13 +203,29 @@ internal sealed class SlotGame : IDisposable
 
             if (machine is not null)
             {
-                view = Roll(machine);
+                PlayerData player = GetPlayer(component.GuildId.Value, component.User.Id);
+
+                if (!player.CanAfford(SpinCost))
+                {
+                    insufficientFunds = true;
+                    currentBalance = player.Balance;
+                }
+                else
+                {
+                    view = Roll(machine, player);
+                }
             }
         }
 
         if (invalidSession)
         {
             await RespondSessionExpiredAsync(component);
+            return;
+        }
+
+        if (insufficientFunds)
+        {
+            await RespondInsufficientFundsAsync(component, currentBalance);
             return;
         }
 
@@ -209,7 +253,11 @@ internal sealed class SlotGame : IDisposable
 
             if (machine is not null)
             {
-                view = BuildReleasedMachineView(machine);
+                view = BuildSessionEndedView(
+                    machine.OwnerDisplayName ?? component.User.Username,
+                    machine.Player?.Balance ?? GetPlayer(
+                        component.GuildId.Value,
+                        component.User.Id).Balance);
                 ReleaseMachine(machine);
             }
         }
@@ -310,6 +358,13 @@ internal sealed class SlotGame : IDisposable
     private static Task RespondSessionExpiredAsync(SocketMessageComponent component) =>
         component.RespondAsync("That slot machine session has expired.", ephemeral: true);
 
+    private static Task RespondInsufficientFundsAsync(
+        SocketMessageComponent component,
+        int currentBalance) =>
+        component.RespondAsync(
+            $"You need ${SpinCost} to spin. Your balance is ${currentBalance}.",
+            ephemeral: true);
+
     private static Task UpdateMessageAsync(
         SocketMessageComponent component,
         MessageComponent view)
@@ -339,10 +394,13 @@ internal sealed class SlotGame : IDisposable
      ulong userId,
      string lobbyId)
     {
+        PlayerData player = GetPlayer(guildId, userId);
+
         var container = new ContainerBuilder()
             .WithAccentColor(new Color(0, 200, 220))
             .WithTextDisplay(
                 "## 🎰 Nutty Slots 🎰\n\n" +
+                $"**Balance:** ${player.Balance}\n\n" +
                 "Choose an available machine:");
 
         foreach (SlotMachine machine in GetMachines(guildId))
@@ -355,11 +413,11 @@ internal sealed class SlotGame : IDisposable
                 .WithCustomId(
                     $"slots:claim:{machine.Number}:{userId}:{lobbyId}")
                 .WithStyle(
-                    machine.IsClaimed
+                    machine.IsClaimed || !player.CanAfford(SpinCost)
                         ? ButtonStyle.Secondary
                         : ButtonStyle.Primary)
                 .WithEmote(new Emoji("🎰"))
-                .WithDisabled(machine.IsClaimed);
+                .WithDisabled(machine.IsClaimed || !player.CanAfford(SpinCost));
 
             var occupantDisplay = new ButtonBuilder()
                 .WithLabel(occupant)
@@ -388,8 +446,10 @@ internal sealed class SlotGame : IDisposable
 
     private static MessageComponent BuildMachineView(
         SlotMachine machine,
-        string machineDisplay,
-        string result)
+        PlayerData player,
+        string? machineDisplay,
+        string? result,
+        string spinButtonLabel)
     {
         var navigationButtons = new ActionRowBuilder()
             .WithButton(
@@ -405,15 +465,24 @@ internal sealed class SlotGame : IDisposable
 
         var rollButton = new ActionRowBuilder()
             .WithButton(
-                "Roll Again",
+                spinButtonLabel,
                 $"slots:roll:{machine.Number}:{machine.SessionId}",
                 ButtonStyle.Primary,
-                emote: new Emoji("🎰"));
+                emote: new Emoji("🎰"),
+                disabled: !player.CanAfford(SpinCost));
 
         string display =
-            $"## 🎰 Slot Machine #{machine.Number}\n\n" +
-            $"```text\n{machineDisplay}\n```\n" +
-            $"{result}\n\n" +
+            $"## 🎰 Slot Machine #{machine.Number} 🎰\n\n";
+
+        if (machineDisplay is not null)
+            display += $"```text\n{machineDisplay}\n```\n";
+
+        if (result is not null)
+            display += $"{result}\n\n";
+
+        display +=
+            $"**Balance:** ${player.Balance}\n" +
+            $"**Spin Cost:** ${SpinCost} • **Win Payout:** ${WinPayout}\n" +
             $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins";
 
         return new ComponentBuilderV2()
@@ -425,15 +494,34 @@ internal sealed class SlotGame : IDisposable
             .Build();
     }
 
-    private static MessageComponent BuildReleasedMachineView(SlotMachine machine) =>
+    private static string BuildIdleMachineDisplay() =>
+        "┌───────────┐\n" +
+        "│ 🍒  🍋  🍊 │\n" +
+        "│ ⭐  🍇  🍒 │ ⬅️\n" +
+        "│ 🍊  ⭐  🍋 │\n" +
+        "└───────────┘";
+
+    private static MessageComponent BuildSessionEndedView(
+        string displayName,
+        int balance) =>
         new ComponentBuilderV2()
             .WithContainer(container => container
-                .WithAccentColor(new Color(0, 200, 220))
+                .WithAccentColor(new Color(100, 100, 100))
                 .WithTextDisplay(
-                    $"## 🎰 Slot Machine #{machine.Number}\n\n" +
-                    "This machine is now free.\n\n" +
-                    $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins"))
+                    $"{displayName} has left the casino with a balance of ${balance}."))
             .Build();
+
+    private PlayerData GetPlayer(ulong guildId, ulong userId)
+    {
+        var key = (guildId, userId);
+
+        if (_players.TryGetValue(key, out PlayerData? player))
+            return player;
+
+        player = new PlayerData(userId);
+        _players[key] = player;
+        return player;
+    }
 
     private List<SlotMachine> GetMachines(ulong guildId)
     {
@@ -493,10 +581,15 @@ internal sealed class SlotGame : IDisposable
         machine.OwnerDisplayName = null;
         machine.SessionId = null;
         machine.LastInteractionUtc = default;
+        machine.Message = null;
+        machine.Player = null;
     }
 
-    private static MessageComponent Roll(SlotMachine machine)
+    private static MessageComponent Roll(SlotMachine machine, PlayerData player)
     {
+        if (!player.TrySpend(SpinCost))
+            throw new InvalidOperationException("The player cannot afford this spin.");
+
         string[,] slots = new string[3, 3];
 
         for (int row = 0; row < 3; row++)
@@ -513,6 +606,9 @@ internal sealed class SlotGame : IDisposable
         machine.TotalWins += winner ? 1 : 0;
         machine.LastInteractionUtc = DateTimeOffset.UtcNow;
 
+        if (winner)
+            player.Credit(WinPayout);
+
         string machineDisplay =
             $"┌───────────┐\n" +
             $"│ {slots[0, 0]}  {slots[0, 1]}  {slots[0, 2]} │\n" +
@@ -520,9 +616,16 @@ internal sealed class SlotGame : IDisposable
             $"│ {slots[2, 0]}  {slots[2, 1]}  {slots[2, 2]} │\n" +
             "└───────────┘";
 
-        string result = winner ? "🎉 **JACKPOT!** 🎉" : "Better luck next time!";
+        string result = winner
+            ? $"🎉 **JACKPOT! You won ${WinPayout}!** 🎉"
+            : "Better luck next time!";
 
-        return BuildMachineView(machine, machineDisplay, result);
+        return BuildMachineView(
+            machine,
+            player,
+            machineDisplay,
+            result,
+            spinButtonLabel: "Spin Again");
     }
 
     private void ExpireSessions()
@@ -532,7 +635,33 @@ internal sealed class SlotGame : IDisposable
         foreach (SlotMachine machine in _machinesByGuild.Values.SelectMany(x => x))
         {
             if (machine.IsClaimed && now - machine.LastInteractionUtc >= SessionTimeout)
+            {
+                IUserMessage? message = machine.Message;
+                string displayName = machine.OwnerDisplayName ?? "The player";
+                int balance = machine.Player?.Balance ?? 0;
                 ReleaseMachine(machine);
+
+                if (message is not null)
+                    _ = UpdateExpiredMessageAsync(message, displayName, balance);
+            }
+        }
+    }
+
+    private static async Task UpdateExpiredMessageAsync(
+        IUserMessage message,
+        string displayName,
+        int balance)
+    {
+        try
+        {
+            await message.ModifyAsync(properties =>
+            {
+                properties.Components = BuildSessionEndedView(displayName, balance);
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to update an expired slot session: {ex.Message}");
         }
     }
 
@@ -543,6 +672,8 @@ internal sealed class SlotGame : IDisposable
         public string? OwnerDisplayName { get; set; }
         public string? SessionId { get; set; }
         public DateTimeOffset LastInteractionUtc { get; set; }
+        public IUserMessage? Message { get; set; }
+        public PlayerData? Player { get; set; }
         public int TotalRolls { get; set; }
         public int TotalWins { get; set; }
         public bool IsClaimed => OwnerUserId.HasValue;
