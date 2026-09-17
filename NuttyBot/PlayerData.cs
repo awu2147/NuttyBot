@@ -2,7 +2,7 @@ namespace NuttyBot;
 
 internal sealed class PlayerData
 {
-    public const int StartingBalance = 100;
+    public const long StartingBalance = 100;
 
     public PlayerData(ulong userId)
     {
@@ -11,11 +11,11 @@ internal sealed class PlayerData
     }
 
     public ulong UserId { get; }
-    public int Balance { get; private set; }
+    public long Balance { get; private set; }
 
-    public bool CanAfford(int amount) => amount > 0 && Balance >= amount;
+    public bool CanAfford(long amount) => amount > 0 && Balance >= amount;
 
-    public bool TrySpend(int amount)
+    public bool TrySpend(long amount)
     {
         if (!CanAfford(amount))
             return false;
@@ -24,7 +24,7 @@ internal sealed class PlayerData
         return true;
     }
 
-    public void Credit(int amount)
+    public void Credit(long amount)
     {
         if (amount <= 0)
             throw new ArgumentOutOfRangeException(nameof(amount));
