@@ -1,5 +1,6 @@
 using Discord;
 using Discord.WebSocket;
+using System.Globalization;
 
 namespace NuttyBot;
 
@@ -12,13 +13,15 @@ internal sealed class SlotGame : IDisposable
     private static readonly string[] Symbols = ["🍒", "🍋", "🍊", "🍇", "⭐"];
     private static readonly MachineBatch[] MachineBatches =
     [
-        new(0, 0, [1, 10, 50]),
-        new(1, 1_000, [10, 100, 500])
+        new(0, 0, [1, 10, 50], "$0", "🟦"),
+        new(1, 1_000, [10, 100, 500], "$1K", "🟪"),
+        new(2, 1_000_000, [10_000, 100_000, 500_000], "$1M", "🟥"),
+        new(3, 1_000_000_000, [10_000_000, 100_000_000, 500_000_000], "$1B", "🟨")
     ];
 
     private readonly object _syncRoot = new();
     private readonly Dictionary<ulong, List<SlotMachine>> _machinesByGuild = [];
-    private readonly Dictionary<(ulong GuildId, ulong UserId), string> _activeLobbies = [];
+    private readonly Dictionary<(ulong GuildId, ulong UserId), LobbySession> _activeLobbies = [];
     private readonly Dictionary<(ulong GuildId, ulong UserId), PlayerData> _players = [];
     private Timer? _cleanupTimer;
 
@@ -59,18 +62,37 @@ internal sealed class SlotGame : IDisposable
         MessageComponent view;
         ulong guildId = command.GuildId.Value;
         ulong userId = command.User.Id;
+        string displayName = command.User is SocketGuildUser guildUser
+            ? guildUser.DisplayName
+            : command.User.Username;
 
         lock (_syncRoot)
         {
             ExpireSessions();
             ReleaseUserMachine(guildId, userId);
-            lobbyId = CreateLobby(guildId, userId);
+            PlayerData player = GetPlayer(guildId, userId);
+            lobbyId = CreateLobby(guildId, userId, displayName, player);
             view = BuildLobbyView(guildId, userId, lobbyId, batchIndex: 0);
         }
 
         await command.RespondAsync(
             components: view,
             flags: MessageFlags.ComponentsV2);
+
+        try
+        {
+            IUserMessage message = await command.GetOriginalResponseAsync();
+
+            lock (_syncRoot)
+            {
+                if (TryGetCurrentLobby(guildId, userId, lobbyId, out LobbySession? lobby))
+                    lobby.Message = message;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to track a slot lobby message: {ex.Message}");
+        }
     }
 
     public async Task HandleButtonAsync(SocketMessageComponent component)
@@ -143,6 +165,11 @@ internal sealed class SlotGame : IDisposable
         {
             ExpireSessions();
             PlayerData player = GetPlayer(guildId, component.User.Id);
+            TouchLobby(
+                guildId,
+                component.User.Id,
+                lobbyId,
+                component.Message);
 
             if (!IsCurrentLobby(guildId, component.User.Id, lobbyId))
             {
@@ -239,6 +266,7 @@ internal sealed class SlotGame : IDisposable
                 }
                 else
                 {
+                    machine.Message = component.Message;
                     SpinResult spin = Spin(machine, player, betAmount);
                     view = BuildMachineView(
                         machine,
@@ -325,8 +353,15 @@ internal sealed class SlotGame : IDisposable
             if (machine is not null)
             {
                 int batchIndex = machine.Batch.Index;
+                string displayName = machine.OwnerDisplayName ?? component.User.Username;
+                PlayerData player = GetPlayer(guildId, userId);
                 ReleaseMachine(machine);
-                string lobbyId = CreateLobby(guildId, userId);
+                string lobbyId = CreateLobby(
+                    guildId,
+                    userId,
+                    displayName,
+                    player,
+                    component.Message);
                 view = BuildLobbyView(guildId, userId, lobbyId, batchIndex);
             }
         }
@@ -364,11 +399,18 @@ internal sealed class SlotGame : IDisposable
             invalidLobby = !IsCurrentLobby(guildId, component.User.Id, lobbyId);
 
             if (!invalidLobby)
+            {
+                TouchLobby(
+                    guildId,
+                    component.User.Id,
+                    lobbyId,
+                    component.Message);
                 view = BuildLobbyView(
                     guildId,
                     component.User.Id,
                     lobbyId,
                     batchIndex);
+            }
         }
 
         if (invalidLobby)
@@ -412,6 +454,11 @@ internal sealed class SlotGame : IDisposable
 
             if (!invalidLobby)
             {
+                TouchLobby(
+                    guildId,
+                    component.User.Id,
+                    lobbyId,
+                    component.Message);
                 PlayerData player = GetPlayer(guildId, component.User.Id);
                 MachineBatch? batch = GetBatch(batchIndex);
 
@@ -443,8 +490,8 @@ internal sealed class SlotGame : IDisposable
         if (lockedBatch)
         {
             await component.RespondAsync(
-                $"You need a balance of ${requiredBalance} to access that machine batch. " +
-                $"Your balance is ${currentBalance}.",
+                $"You need a balance of {FormatMoney(requiredBalance)} to access that machine batch. " +
+                $"Your balance is {FormatMoney(currentBalance)}.",
                 ephemeral: true);
             return;
         }
@@ -518,7 +565,8 @@ internal sealed class SlotGame : IDisposable
         long requiredBalance,
         long currentBalance) =>
         component.RespondAsync(
-            $"You need ${requiredBalance} for that bet. Your balance is ${currentBalance}.",
+            $"You need {FormatMoney(requiredBalance)} for that bet. " +
+            $"Your balance is {FormatMoney(currentBalance)}.",
             ephemeral: true);
 
     private static Task UpdateMessageAsync(
@@ -531,16 +579,47 @@ internal sealed class SlotGame : IDisposable
         });
     }
 
-    private string CreateLobby(ulong guildId, ulong userId)
+    private string CreateLobby(
+        ulong guildId,
+        ulong userId,
+        string displayName,
+        PlayerData player,
+        IUserMessage? message = null)
     {
         string lobbyId = Guid.NewGuid().ToString("N");
-        _activeLobbies[(guildId, userId)] = lobbyId;
+        _activeLobbies[(guildId, userId)] = new LobbySession(
+            lobbyId,
+            displayName,
+            player,
+            message);
         return lobbyId;
     }
 
+    private bool TryGetCurrentLobby(
+        ulong guildId,
+        ulong userId,
+        string lobbyId,
+        out LobbySession? lobby)
+    {
+        return _activeLobbies.TryGetValue((guildId, userId), out lobby) &&
+            lobby.Id == lobbyId;
+    }
+
     private bool IsCurrentLobby(ulong guildId, ulong userId, string lobbyId) =>
-        _activeLobbies.TryGetValue((guildId, userId), out string? currentLobbyId) &&
-        currentLobbyId == lobbyId;
+        TryGetCurrentLobby(guildId, userId, lobbyId, out _);
+
+    private void TouchLobby(
+        ulong guildId,
+        ulong userId,
+        string lobbyId,
+        IUserMessage message)
+    {
+        if (!TryGetCurrentLobby(guildId, userId, lobbyId, out LobbySession? lobby))
+            return;
+
+        lobby.LastInteractionUtc = DateTimeOffset.UtcNow;
+        lobby.Message = message;
+    }
 
     private void CloseLobby(ulong guildId, ulong userId) =>
         _activeLobbies.Remove((guildId, userId));
@@ -553,6 +632,13 @@ internal sealed class SlotGame : IDisposable
     {
         PlayerData player = GetPlayer(guildId, userId);
         MachineBatch batch = GetAccessibleBatch(player, batchIndex);
+        string displayName = TryGetCurrentLobby(
+            guildId,
+            userId,
+            lobbyId,
+            out LobbySession? lobby)
+                ? lobby.DisplayName
+                : "Unknown player";
 
         var navigationButtons = new ActionRowBuilder()
             .WithButton(
@@ -568,12 +654,11 @@ internal sealed class SlotGame : IDisposable
 
         var container = new ContainerBuilder()
             .WithAccentColor(new Color(0, 200, 220))
-            .WithActionRow(navigationButtons)
             .WithTextDisplay(
-                "## 🎰 Nutty Slots 🎰\n\n" +
-                $"**Balance:** ${player.Balance}\n\n" +
-                $"**Machine Batch:** ${batch.RequiredBalance}+\n\n" +
-                "Choose an available machine:");
+                $"**Player:** {displayName}\n" +
+                $"**Balance:** {FormatMoney(player.Balance)}")
+            .WithActionRow(navigationButtons)
+            .WithTextDisplay("Choose an available slot machine:");
 
         foreach (SlotMachine machine in GetMachines(guildId)
                      .Where(machine => machine.Batch.Index == batch.Index))
@@ -583,13 +668,14 @@ internal sealed class SlotGame : IDisposable
                 : "Available";
 
             var machineButton = new ButtonBuilder()
+                .WithLabel("🎰")
                 .WithCustomId(
                     $"slots:claim:{machine.Id}:{userId}:{lobbyId}")
                 .WithStyle(
                     machine.IsClaimed
                         ? ButtonStyle.Secondary
                         : ButtonStyle.Primary)
-                .WithEmote(new Emoji("🎰"))
+                .WithEmote(new Emoji(machine.Batch.ColorEmoji))
                 .WithDisabled(machine.IsClaimed);
 
             var occupantDisplay = new ButtonBuilder()
@@ -608,17 +694,40 @@ internal sealed class SlotGame : IDisposable
 
         foreach (MachineBatch availableBatch in MachineBatches)
         {
+            bool canAccess = player.Balance >= availableBatch.RequiredBalance;
+
             batchButtons.WithButton(
-                $"${availableBatch.RequiredBalance}",
+                availableBatch.ButtonLabel,
                 $"slots:batch:{userId}:{lobbyId}:{availableBatch.Index}",
-                availableBatch.Index == batch.Index
-                    ? ButtonStyle.Primary
-                    : ButtonStyle.Secondary,
-                disabled: player.Balance < availableBatch.RequiredBalance);
+                !canAccess
+                    ? ButtonStyle.Secondary
+                    : availableBatch.Index == batch.Index
+                        ? ButtonStyle.Success
+                        : ButtonStyle.Primary,
+                emote: new Emoji(availableBatch.ColorEmoji),
+                disabled: !canAccess);
+        }
+
+        var statusName = string.Empty;
+        if (batch.RequiredBalance == 0)
+        {
+            statusName = "Chud";
+        }
+        else if (batch.RequiredBalance == 1000)
+        { 
+            statusName = "High Roller"; 
+        }
+        else if (batch.RequiredBalance == 1000000)
+        {
+            statusName = "Millionaire";
+        }
+        else if (batch.RequiredBalance == 1000000000)
+        {
+            statusName = "Billionaire";
         }
 
         container
-            .WithTextDisplay("**Machine Batches:**")
+            .WithTextDisplay($"**{statusName} Room [{FormatMoney(batch.RequiredBalance)}+]**")
             .WithActionRow(batchButtons);
 
         return new ComponentBuilderV2()
@@ -649,7 +758,7 @@ internal sealed class SlotGame : IDisposable
         foreach (long betAmount in machine.Batch.BetAmounts)
         {
             betButtons.WithButton(
-                $"${betAmount}",
+                FormatCompactAmount(betAmount),
                 $"slots:roll:{machine.Id}:{machine.SessionId}:{betAmount}",
                 ButtonStyle.Primary,
                 disabled: !player.CanAfford(betAmount));
@@ -662,7 +771,7 @@ internal sealed class SlotGame : IDisposable
                 disabled: player.Balance <= 0);
 
         string display =
-            $"## 🎰 Slot Machine #{machine.Number} 🎰\n\n";
+            $"### 🎰 Slot Machine {machine.Number} 🎰\n\n";
 
         if (machineDisplay is not null)
             display += $"```text\n{machineDisplay}\n```\n";
@@ -671,13 +780,15 @@ internal sealed class SlotGame : IDisposable
             display += $"{result}\n\n";
 
         display +=
-            $"**Balance:** ${player.Balance}\n" +
             $"**Win Multiplier:** ×{WinMultiplier}\n" +
             $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins";
 
         return new ComponentBuilderV2()
             .WithContainer(container => container
                 .WithAccentColor(new Color(0, 200, 220))
+                .WithTextDisplay(
+                    $"**Player:** {machine.OwnerDisplayName ?? "Unknown player"}\n" +
+                    $"**Balance:** {FormatMoney(player.Balance)}")
                 .WithActionRow(navigationButtons)
                 .WithTextDisplay(display)
                 .WithTextDisplay("**Bet on Spin:**")
@@ -692,6 +803,29 @@ internal sealed class SlotGame : IDisposable
         "│ 🍊  ⭐  🍋 │\n" +
         "└───────────┘";
 
+    private static string FormatCompactAmount(long amount)
+    {
+        if (amount >= 1_000_000_000_000_000)
+            return $"${(decimal)amount / 1_000_000_000_000_000:0.##}Q";
+
+        if (amount >= 1_000_000_000_000)
+            return $"${(decimal)amount / 1_000_000_000_000:0.##}T";
+
+        if (amount >= 1_000_000_000)
+            return $"${(decimal)amount / 1_000_000_000:0.##}B";
+
+        if (amount >= 1_000_000)
+            return $"${(decimal)amount / 1_000_000:0.##}M";
+
+        if (amount >= 1_000)
+            return $"${(decimal)amount / 1_000:0.##}K";
+
+        return $"${amount}";
+    }
+
+    private static string FormatMoney(long amount) =>
+        "$" + amount.ToString("N0", CultureInfo.InvariantCulture);
+
     private static MessageComponent BuildSessionEndedView(
         string displayName,
         long balance) =>
@@ -699,7 +833,7 @@ internal sealed class SlotGame : IDisposable
             .WithContainer(container => container
                 .WithAccentColor(new Color(100, 100, 100))
                 .WithTextDisplay(
-                    $"{displayName} has left the casino with a balance of ${balance}."))
+                    $"{displayName} has left the casino with a balance of {FormatMoney(balance)}."))
             .Build();
 
     private PlayerData GetPlayer(ulong guildId, ulong userId)
@@ -848,11 +982,11 @@ internal sealed class SlotGame : IDisposable
                 slots[row, column] = Symbols[Random.Shared.Next(Symbols.Length)];
         }
 
-        //bool winner =
-        //    slots[1, 0] == slots[1, 1] &&
-        //    slots[1, 1] == slots[1, 2];
+        bool winner =
+            slots[1, 0] == slots[1, 1] &&
+            slots[1, 1] == slots[1, 2];
 
-        bool winner = true;
+        //bool winner = true;
 
         machine.TotalRolls++;
         machine.TotalWins += winner ? 1 : 0;
@@ -874,7 +1008,7 @@ internal sealed class SlotGame : IDisposable
             "└───────────┘";
 
         string result = winner
-            ? $"🎉 **JACKPOT! You won ${payout}!** 🎉"
+            ? $"🎉 **JACKPOT! You won {FormatMoney(payout)}!** 🎉"
             : "Better luck next time!";
 
         return new SpinResult(machineDisplay, result);
@@ -895,6 +1029,24 @@ internal sealed class SlotGame : IDisposable
 
                 if (message is not null)
                     _ = UpdateExpiredMessageAsync(message, displayName, balance);
+            }
+        }
+
+        var expiredLobbies = _activeLobbies
+            .Where(entry => now - entry.Value.LastInteractionUtc >= SessionTimeout)
+            .ToList();
+
+        foreach (var entry in expiredLobbies)
+        {
+            _activeLobbies.Remove(entry.Key);
+            LobbySession lobby = entry.Value;
+
+            if (lobby.Message is not null)
+            {
+                _ = UpdateExpiredMessageAsync(
+                    lobby.Message,
+                    lobby.DisplayName,
+                    lobby.Player.Balance);
             }
         }
     }
@@ -919,10 +1071,25 @@ internal sealed class SlotGame : IDisposable
 
     private sealed record SpinResult(string MachineDisplay, string Result);
 
+    private sealed class LobbySession(
+        string id,
+        string displayName,
+        PlayerData player,
+        IUserMessage? message)
+    {
+        public string Id { get; } = id;
+        public string DisplayName { get; } = displayName;
+        public PlayerData Player { get; } = player;
+        public IUserMessage? Message { get; set; } = message;
+        public DateTimeOffset LastInteractionUtc { get; set; } = DateTimeOffset.UtcNow;
+    }
+
     private sealed record MachineBatch(
         int Index,
         long RequiredBalance,
-        long[] BetAmounts);
+        long[] BetAmounts,
+        string ButtonLabel,
+        string ColorEmoji);
 
     private sealed class SlotMachine(
         int id,
