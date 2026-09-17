@@ -9,6 +9,7 @@ namespace NuttyBot
     class Program
     {
         private static DiscordSocketClient _client = null!;
+        private static readonly SlotGame Slots = new();
         private static readonly HttpClient Http = new();
         private static readonly ulong[] GuildIds =
         {
@@ -21,21 +22,18 @@ namespace NuttyBot
         private const ulong YoinkAnnouncementChannelId = 472949270857777154; //nutty/general
         private const string YoinkEmote = "<:evil_cat_smirk:1549875953914740846>";
 
-        private static readonly string[] SlotSymbols =
-        {
-            "🍒",
-            "🍋",
-            "🍊",
-            "🍇",
-            "⭐"
-        };
-
         public static async Task Main()
         {
             // Start the HTTP listener in parallel.
             // _ = InteractionHttpServer.RunAsync();
 
-            var token = "MTU0OTgzMTk2NTA3NzkzMDA1NQ.GymayH.cn37oqN4L0qyfzNYnKYgzFs7Sp20b5WRknnnNk";
+            var token = Environment.GetEnvironmentVariable("DISCORD_BOT_TOKEN");
+
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                throw new InvalidOperationException(
+                    "Set the DISCORD_BOT_TOKEN environment variable before starting the bot.");
+            }
 
             _client = new DiscordSocketClient(new DiscordSocketConfig
             {
@@ -52,10 +50,11 @@ namespace NuttyBot
 
             _client.Ready += OnReady;
             _client.JoinedGuild += OnJoinedGuild;
-            _client.SlashCommandExecuted += OnSlashCommand;
-            _client.MessageCommandExecuted += OnMessageCommand;
-            _client.SelectMenuExecuted += OnSelectMenu;
-            _client.ButtonExecuted += OnButtonExecuted;
+
+            _client.MessageCommandExecuted += command => DispatchInteractionAsync(() => OnMessageCommand(command), "message command");
+            _client.SelectMenuExecuted += component => DispatchInteractionAsync(() => OnSelectMenu(component), "select menu");
+            _client.SlashCommandExecuted += command => DispatchInteractionAsync(() => OnSlashCommand(command), "slash command");
+            _client.ButtonExecuted += component => DispatchInteractionAsync(() => Slots.HandleButtonAsync(component), "button");
 
             await _client.LoginAsync(TokenType.Bot, token);
             await _client.StartAsync();
@@ -63,10 +62,31 @@ namespace NuttyBot
             await Task.Delay(Timeout.Infinite);
         }
 
+        private static Task DispatchInteractionAsync(Func<Task> handler, string interactionType)
+        {
+            _ = RunInteractionSafelyAsync(handler, interactionType);
+
+            // Release Discord.Net's gateway task immediately.
+            return Task.CompletedTask;
+        }
+
+        private static async Task RunInteractionSafelyAsync(Func<Task> handler, string interactionType)
+        {
+            try
+            {
+                await handler();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"Unhandled {interactionType} error: {ex}");
+            }
+        }
+
         private static async Task OnReady()
         {
             await EnsureGlobalCommandsRegistered();
-            StartSlotCleanupTimer();
+            Slots.Start();
             // Handles guilds the bot was already installed in
             // before the program started.
             foreach (var guild in _client.Guilds)
@@ -87,8 +107,8 @@ namespace NuttyBot
             var existingCommands =
                 await _client.GetGlobalApplicationCommandsAsync();
 
-            //if (existingCommands.Any(x => x.Name == "Steal Reaction"))
-            //    return;
+            if (existingCommands.Any(x => x.Name == "Steal Reaction"))
+                return;
 
             var command = new MessageCommandBuilder()
                 .WithName("Steal Reaction")
@@ -126,9 +146,7 @@ namespace NuttyBot
                         "Image URL",
                         isRequired: true);
 
-                var slotCommand = new SlashCommandBuilder()
-                    .WithName("rollslots")
-                    .WithDescription("Roll the slot machine!");
+                var slotCommand = SlotGame.CreateCommand();
 
                 if (!existingCommands.Any(x => x.Name == "addemoji"))
                 {
@@ -157,7 +175,7 @@ namespace NuttyBot
                     break;
 
                 case "rollslots":
-                    await HandleRollSlots(command);
+                    await Slots.HandleSlashCommandAsync(command);
                     break;
             }
         }
@@ -224,685 +242,6 @@ namespace NuttyBot
                     $"Failed: `{ex.Message}`",
                     ephemeral: true);
             }
-        }
-
-        private const int SlotMachineCount = 5;
-        private static readonly TimeSpan SlotSessionTimeout = TimeSpan.FromSeconds(30);
-        private static readonly object SlotLock = new();
-        private static readonly Dictionary<ulong, List<SlotMachine>> SlotMachinesByGuild = new();
-        private static System.Threading.Timer? _slotCleanupTimer;
-        private static readonly Dictionary<(ulong GuildId, ulong UserId), string> ActiveSlotLobbies = new();
-
-        private class SlotMachine
-        {
-            public int Number { get; init; }
-
-            // Current session
-            public ulong? OwnerUserId { get; set; }
-            public string? SessionId { get; set; }
-            public DateTimeOffset LastInteractionUtc { get; set; }
-
-            // Lifetime stats for this bot session
-            public int TotalRolls { get; set; }
-            public int TotalWins { get; set; }
-
-            public bool IsClaimed => OwnerUserId.HasValue;
-        }
-
-        private static string CreateSlotLobby(ulong guildId, ulong userId)
-        {
-            string lobbyId = Guid.NewGuid().ToString("N");
-
-            ActiveSlotLobbies[(guildId, userId)] = lobbyId;
-
-            return lobbyId;
-        }
-
-        private static bool IsCurrentLobby(ulong guildId, ulong userId, string lobbyId)
-        {
-            return ActiveSlotLobbies.TryGetValue(
-                       (guildId, userId),
-                       out string? currentLobbyId)
-                   && currentLobbyId == lobbyId;
-        }
-
-        private static void CloseSlotLobby(ulong guildId, ulong userId)
-        {
-            ActiveSlotLobbies.Remove((guildId, userId));
-        }
-
-        private static void ReleaseUserSlotMachine(ulong guildId, ulong userId)
-        {
-            var machines = GetSlotMachines(guildId);
-
-            var machine = machines.FirstOrDefault(
-                x => x.OwnerUserId == userId);
-
-            if (machine != null)
-                ReleaseSlotMachine(machine);
-        }
-
-        private static string BuildSlotLobbyContent(ulong guildId)
-        {
-            return
-                "🎰 **Nutty Slots Lobby** 🎰\n\n" +
-                "Choose a slot machine:";
-        }
-
-        private static MessageComponent BuildSlotLobbyButtons(ulong guildId, ulong userId, string lobbyId)
-        {
-            var machines = GetSlotMachines(guildId);
-
-            var builder = new ComponentBuilder();
-
-            foreach (var machine in machines)
-            {
-                string statusEmoji = machine.IsClaimed
-                    ? "🔒"
-                    : "🟢";
-
-                var button = new ButtonBuilder()
-                    .WithLabel($"🎰 #{machine.Number} {statusEmoji}")
-                    .WithCustomId(
-                        $"slots:claim:{machine.Number}:{userId}:{lobbyId}")
-                    .WithStyle(
-                        machine.IsClaimed
-                            ? ButtonStyle.Secondary
-                            : ButtonStyle.Primary)
-                    .WithDisabled(machine.IsClaimed);
-
-                builder.WithButton(button);
-            }
-
-            builder.WithButton(
-                "Refresh Lobby",
-                $"slots:refresh:{userId}:{lobbyId}",
-                ButtonStyle.Secondary,
-                emote: new Emoji("🔄"));
-
-            return builder.Build();
-        }
-
-        private static List<SlotMachine> GetSlotMachines(ulong guildId)
-        {
-            if (!SlotMachinesByGuild.TryGetValue(guildId, out var machines))
-            {
-                machines = Enumerable
-                    .Range(1, SlotMachineCount)
-                    .Select(number => new SlotMachine
-                    {
-                        Number = number
-                    })
-                    .ToList();
-
-                SlotMachinesByGuild[guildId] = machines;
-            }
-
-            return machines;
-        }
-
-        private static bool TryClaimSlotMachine(
-            ulong guildId,
-            ulong userId,
-            int machineNumber,
-            out SlotMachine? machine)
-        {
-            machine = GetSlotMachines(guildId)
-                .FirstOrDefault(x => x.Number == machineNumber);
-
-            if (machine == null)
-                return false;
-
-            if (machine.IsClaimed)
-                return false;
-
-            machine.OwnerUserId = userId;
-            machine.SessionId = Guid.NewGuid().ToString("N");
-            machine.LastInteractionUtc = DateTimeOffset.UtcNow;
-
-            return true;
-        }
-
-        private static string RollSlotMachine(SlotMachine machine)
-        {
-            string[,] slots = new string[3, 3];
-
-            for (int row = 0; row < 3; row++)
-            {
-                for (int column = 0; column < 3; column++)
-                {
-                    slots[row, column] =
-                        SlotSymbols[Random.Shared.Next(SlotSymbols.Length)];
-                }
-            }
-
-            bool winner =
-                slots[1, 0] == slots[1, 1] &&
-                slots[1, 1] == slots[1, 2];
-
-            machine.TotalRolls++;
-
-            if (winner)
-                machine.TotalWins++;
-
-            machine.LastInteractionUtc = DateTimeOffset.UtcNow;
-
-            string machineDisplay =
-                $"┌───────────┐\n" +
-                $"│ {slots[0, 0]}  {slots[0, 1]}  {slots[0, 2]} │\n" +
-                $"│ {slots[1, 0]}  {slots[1, 1]}  {slots[1, 2]} │ ⬅️\n" +
-                $"│ {slots[2, 0]}  {slots[2, 1]}  {slots[2, 2]} │\n" +
-                $"└───────────┘";
-
-            string result = winner
-                ? "🎉 **JACKPOT!** 🎉"
-                : "Better luck next time!";
-
-            return
-                $"🎰 **Slot Machine #{machine.Number}** 🎰\n\n" +
-                $"{machineDisplay}\n\n" +
-                $"{result}\n\n" +
-                $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins";
-        }
-
-        private static MessageComponent BuildSlotButtons(SlotMachine machine)
-        {
-            return new ComponentBuilder()
-                .WithButton(
-                    "Roll Again",
-                    $"slots:roll:{machine.Number}:{machine.SessionId}",
-                    ButtonStyle.Primary,
-                    emote: new Emoji("🎰"))
-
-                .WithButton(
-                    "Leave Machine",
-                    $"slots:leave:{machine.Number}:{machine.SessionId}",
-                    ButtonStyle.Secondary,
-                    emote: new Emoji("🚪"))
-
-                .WithButton(
-                    "Back to Lobby",
-                    $"slots:lobby:{machine.Number}:{machine.SessionId}",
-                    ButtonStyle.Secondary,
-                    emote: new Emoji("↩️"))
-
-                .Build();
-        }
-
-        private static async Task HandleRollSlots(SocketSlashCommand command)
-        {
-            if (!command.GuildId.HasValue)
-            {
-                await command.RespondAsync(
-                    "Slots can only be played inside a server.",
-                    ephemeral: true);
-
-                return;
-            }
-
-            ulong guildId = command.GuildId.Value;
-            ulong userId = command.User.Id;
-
-            string lobbyId;
-            string content;
-            MessageComponent components;
-
-            lock (SlotLock)
-            {
-                ExpireSlotSessions();
-
-                // Safety feature:
-                // running /rollslots abandons your current machine.
-                ReleaseUserSlotMachine(guildId, userId);
-
-                // Also invalidates any previous lobby.
-                lobbyId = CreateSlotLobby(guildId, userId);
-
-                content = BuildSlotLobbyContent(guildId);
-
-                components = BuildSlotLobbyButtons(
-                    guildId,
-                    userId,
-                    lobbyId);
-            }
-
-            await command.RespondAsync(
-                content,
-                components: components);
-        }
-
-        private static async Task OnButtonExecuted(SocketMessageComponent component)
-        {
-            if (!component.Data.CustomId.StartsWith("slots:"))
-                return;
-
-            if (!component.GuildId.HasValue)
-                return;
-
-            string[] parts =
-                component.Data.CustomId.Split(':');
-
-            if (parts.Length < 2)
-                return;
-
-            switch (parts[1])
-            {
-                case "claim":
-                    await HandleSlotClaim(component, parts);
-                    break;
-
-                case "roll":
-                    await HandleSlotRoll(component, parts);
-                    break;
-
-                case "leave":
-                    await HandleSlotLeave(component, parts);
-                    break;
-
-                case "lobby":
-                    await HandleReturnToLobby(component, parts);
-                    break;
-
-                case "refresh":
-                    await HandleSlotLobbyRefresh(component, parts);
-                    break;
-            }
-        }
-
-        private static async Task HandleSlotClaim(
-    SocketMessageComponent component,
-    string[] parts)
-        {
-            if (parts.Length != 5)
-                return;
-
-            ulong guildId = component.GuildId!.Value;
-
-            if (!int.TryParse(parts[2], out int machineNumber))
-                return;
-
-            if (!ulong.TryParse(parts[3], out ulong lobbyUserId))
-                return;
-
-            string lobbyId = parts[4];
-
-            // Prevent another user from using somebody else's lobby.
-            if (component.User.Id != lobbyUserId)
-            {
-                await component.RespondAsync(
-                    "This isn't your slot lobby!",
-                    ephemeral: true);
-
-                return;
-            }
-
-            string? content = null;
-            MessageComponent? components = null;
-
-            bool oldLobby = false;
-            bool machineTaken = false;
-
-            lock (SlotLock)
-            {
-                ExpireSlotSessions();
-
-                if (!IsCurrentLobby(
-                        guildId,
-                        component.User.Id,
-                        lobbyId))
-                {
-                    oldLobby = true;
-                }
-                else if (!TryClaimSlotMachine(
-                             guildId,
-                             component.User.Id,
-                             machineNumber,
-                             out SlotMachine? machine))
-                {
-                    machineTaken = true;
-
-                    // Refresh the lobby because its state
-                    // may have changed since it was displayed.
-                    content = BuildSlotLobbyContent(guildId);
-
-                    components = BuildSlotLobbyButtons(
-                        guildId,
-                        component.User.Id,
-                        lobbyId);
-                }
-                else
-                {
-                    CloseSlotLobby(
-                        guildId,
-                        component.User.Id);
-
-                    // Immediately perform the first roll.
-                    content = RollSlotMachine(machine!);
-
-                    components = BuildSlotButtons(machine!);
-                }
-            }
-
-            if (oldLobby)
-            {
-                await component.RespondAsync(
-                    "That slot lobby is no longer active. Use `/rollslots` again.",
-                    ephemeral: true);
-
-                return;
-            }
-
-            if (machineTaken)
-            {
-                await component.UpdateAsync(message =>
-                {
-                    message.Content = content;
-                    message.Components = components;
-                });
-
-                return;
-            }
-
-            await component.UpdateAsync(message =>
-            {
-                message.Content = content;
-                message.Components = components;
-            });
-        }
-
-        private static async Task HandleSlotRoll(
-    SocketMessageComponent component,
-    string[] parts)
-        {
-            if (parts.Length != 4)
-                return;
-
-            if (!int.TryParse(parts[2], out int machineNumber))
-                return;
-
-            string sessionId = parts[3];
-
-            ulong guildId = component.GuildId!.Value;
-
-            string? content = null;
-            MessageComponent? components = null;
-
-            bool invalidSession = false;
-
-            lock (SlotLock)
-            {
-                ExpireSlotSessions();
-
-                var machine = GetSlotMachines(guildId)
-                    .FirstOrDefault(
-                        x => x.Number == machineNumber);
-
-                if (machine == null ||
-                    machine.OwnerUserId != component.User.Id ||
-                    machine.SessionId != sessionId)
-                {
-                    invalidSession = true;
-                }
-                else
-                {
-                    content = RollSlotMachine(machine);
-                    components = BuildSlotButtons(machine);
-                }
-            }
-
-            if (invalidSession)
-            {
-                await component.RespondAsync(
-                    "That slot machine session has expired.",
-                    ephemeral: true);
-
-                return;
-            }
-
-            await component.UpdateAsync(message =>
-            {
-                message.Content = content;
-                message.Components = components;
-            });
-        }
-
-        private static async Task HandleSlotLeave(
-    SocketMessageComponent component,
-    string[] parts)
-        {
-            if (parts.Length != 4)
-                return;
-
-            if (!int.TryParse(parts[2], out int machineNumber))
-                return;
-
-            string sessionId = parts[3];
-
-            ulong guildId = component.GuildId!.Value;
-
-            string? content = null;
-            bool invalidSession = false;
-
-            lock (SlotLock)
-            {
-                ExpireSlotSessions();
-
-                var machine = GetSlotMachines(guildId)
-                    .FirstOrDefault(
-                        x => x.Number == machineNumber);
-
-                if (machine == null ||
-                    machine.OwnerUserId != component.User.Id ||
-                    machine.SessionId != sessionId)
-                {
-                    invalidSession = true;
-                }
-                else
-                {
-                    content =
-                        $"🎰 **Slot Machine #{machine.Number}** is now free.\n\n" +
-                        $"**Machine Stats:** " +
-                        $"{machine.TotalRolls} rolls • " +
-                        $"{machine.TotalWins} wins";
-
-                    ReleaseSlotMachine(machine);
-                }
-            }
-
-            if (invalidSession)
-            {
-                await component.RespondAsync(
-                    "That slot machine session has expired.",
-                    ephemeral: true);
-
-                return;
-            }
-
-            await component.UpdateAsync(message =>
-            {
-                message.Content = content;
-                message.Components =
-                    new ComponentBuilder().Build();
-            });
-        }
-
-        private static async Task HandleReturnToLobby(
-    SocketMessageComponent component,
-    string[] parts)
-        {
-            if (parts.Length != 4)
-                return;
-
-            if (!int.TryParse(parts[2], out int machineNumber))
-                return;
-
-            string sessionId = parts[3];
-
-            ulong guildId = component.GuildId!.Value;
-            ulong userId = component.User.Id;
-
-            string? content = null;
-            MessageComponent? components = null;
-
-            bool invalidSession = false;
-
-            lock (SlotLock)
-            {
-                ExpireSlotSessions();
-
-                var machine = GetSlotMachines(guildId)
-                    .FirstOrDefault(
-                        x => x.Number == machineNumber);
-
-                if (machine == null ||
-                    machine.OwnerUserId != userId ||
-                    machine.SessionId != sessionId)
-                {
-                    invalidSession = true;
-                }
-                else
-                {
-                    // Release their current machine.
-                    ReleaseSlotMachine(machine);
-
-                    // Create a completely new lobby session.
-                    string lobbyId =
-                        CreateSlotLobby(guildId, userId);
-
-                    content =
-                        BuildSlotLobbyContent(guildId);
-
-                    components =
-                        BuildSlotLobbyButtons(
-                            guildId,
-                            userId,
-                            lobbyId);
-                }
-            }
-
-            if (invalidSession)
-            {
-                await component.RespondAsync(
-                    "That slot machine session has expired.",
-                    ephemeral: true);
-
-                return;
-            }
-
-            await component.UpdateAsync(message =>
-            {
-                message.Content = content;
-                message.Components = components;
-            });
-        }
-
-        private static async Task HandleSlotLobbyRefresh(
-    SocketMessageComponent component,
-    string[] parts)
-        {
-            if (parts.Length != 4)
-                return;
-
-            ulong guildId = component.GuildId!.Value;
-
-            if (!ulong.TryParse(parts[2], out ulong lobbyUserId))
-                return;
-
-            string lobbyId = parts[3];
-
-            // Don't let somebody else interact with your lobby.
-            if (component.User.Id != lobbyUserId)
-            {
-                await component.RespondAsync(
-                    "This isn't your slot lobby!",
-                    ephemeral: true);
-
-                return;
-            }
-
-            string? content = null;
-            MessageComponent? components = null;
-            bool invalidLobby = false;
-
-            lock (SlotLock)
-            {
-                // This is important because machines that have been
-                // idle for 30+ seconds should be freed before refreshing.
-                ExpireSlotSessions();
-
-                if (!IsCurrentLobby(
-                        guildId,
-                        component.User.Id,
-                        lobbyId))
-                {
-                    invalidLobby = true;
-                }
-                else
-                {
-                    content = BuildSlotLobbyContent(guildId);
-
-                    components = BuildSlotLobbyButtons(
-                        guildId,
-                        component.User.Id,
-                        lobbyId);
-                }
-            }
-
-            if (invalidLobby)
-            {
-                await component.RespondAsync(
-                    "That slot lobby is no longer active. Use `/rollslots` again.",
-                    ephemeral: true);
-
-                return;
-            }
-
-            await component.UpdateAsync(message =>
-            {
-                message.Content = content;
-                message.Components = components;
-            });
-        }
-
-        private static void ReleaseSlotMachine(SlotMachine machine)
-        {
-            machine.OwnerUserId = null;
-            machine.SessionId = null;
-            machine.LastInteractionUtc = default;
-        }
-
-        private static void ExpireSlotSessions()
-        {
-            var now = DateTimeOffset.UtcNow;
-
-            foreach (var machines in SlotMachinesByGuild.Values)
-            {
-                foreach (var machine in machines)
-                {
-                    if (!machine.IsClaimed)
-                        continue;
-
-                    if (now - machine.LastInteractionUtc >= SlotSessionTimeout)
-                    {
-                        ReleaseSlotMachine(machine);
-                    }
-                }
-            }
-        }
-
-        private static void StartSlotCleanupTimer()
-        {
-            _slotCleanupTimer ??= new System.Threading.Timer(
-                _ =>
-                {
-                    lock (SlotLock)
-                    {
-                        ExpireSlotSessions();
-                    }
-                },
-                null,
-                TimeSpan.FromSeconds(5),
-                TimeSpan.FromSeconds(5));
         }
 
         private static async Task OnMessageCommand(
