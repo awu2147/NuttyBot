@@ -67,4 +67,13 @@ internal sealed class PlayerData
         CompletedUtc = timestamp;
         return true;
     }
+
+    public void ResetRun()
+    {
+        Balance = StartingBalance;
+        OrgansSold = 0;
+        TotalSpins = 0;
+        FirstGambleUtc = null;
+        CompletedUtc = null;
+    }
 }

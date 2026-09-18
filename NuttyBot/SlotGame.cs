@@ -1,6 +1,7 @@
 using Discord;
 using Discord.WebSocket;
 using System.Globalization;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace NuttyBot;
 
@@ -54,8 +55,8 @@ internal sealed class SlotGame : IDisposable
     [
         new(0, 0, [1, 10, 50], "$0", "🟦", new Color(52, 152, 219)),
         new(1, 1_000, [100, 1000, 5000], "$1K", "🟪", new Color(155, 89, 182)),
-        new(2, 1_000_000, [100_000, 1_000_000, 5_000_000], "$1M", "🟥", new Color(231, 76, 60)),
-        new(3, 1_000_000_000, [100_000_000, 1_000_000_000, 5_000_000_000], "$1B", "🟨", new Color(241, 196, 15))
+        new(2, 1_000_000, [100_000, 500_000, 2_000_000], "$1M", "🟥", new Color(231, 76, 60)),
+        new(3, 1_000_000_000, [100_000_000, 500_000_000, 2_000_000_000], "$1B", "🟨", new Color(241, 196, 15))
     ];
 
     private readonly object _syncRoot = new();
@@ -196,11 +197,122 @@ internal sealed class SlotGame : IDisposable
                 await HandleLobbySellOrganAsync(component, parts);
                 break;
 
+            case "playagain":
+                await HandlePlayAgainAsync(component, parts);
+                break;
+
+            case "share":
+                await HandleShareResultAsync(component, parts);
+                break;
+
             case "reel":
             case "lever":
                 await component.DeferAsync();
                 break;
         }
+    }
+
+    private async Task HandlePlayAgainAsync(
+        SocketMessageComponent component,
+        string[] parts)
+    {
+        if (!TryParseVictoryAction(parts, out ulong victoryUserId))
+            return;
+
+        if (component.User.Id != victoryUserId)
+        {
+            await component.RespondAsync(
+                "Only the winning player can start a new run.",
+                ephemeral: true);
+            return;
+        }
+
+        ulong guildId = component.GuildId!.Value;
+        string displayName = component.User is SocketGuildUser guildUser
+            ? guildUser.DisplayName
+            : component.User.Username;
+        MessageComponent? view = null;
+
+        lock (_syncRoot)
+        {
+            PlayerData player = GetPlayer(guildId, component.User.Id);
+
+            if (player.HasCompletedRun)
+            {
+                ReleaseUserMachine(guildId, component.User.Id);
+                CloseLobby(guildId, component.User.Id);
+                player.ResetRun();
+                string lobbyId = CreateLobby(
+                    guildId,
+                    component.User.Id,
+                    displayName,
+                    player,
+                    component.Message);
+                view = BuildLobbyView(
+                    guildId,
+                    component.User.Id,
+                    lobbyId,
+                    batchIndex: 0);
+            }
+        }
+
+        if (view is null)
+        {
+            await component.RespondAsync(
+                "That completed run is no longer available.",
+                ephemeral: true);
+            return;
+        }
+
+        await UpdateMessageAsync(component, view);
+    }
+
+    private async Task HandleShareResultAsync(
+        SocketMessageComponent component,
+        string[] parts)
+    {
+        if (!TryParseVictoryAction(parts, out ulong victoryUserId))
+            return;
+
+        if (component.User.Id != victoryUserId)
+        {
+            await component.RespondAsync(
+                "Only the winning player can share this result.",
+                ephemeral: true);
+            return;
+        }
+
+        MessageComponent? sharedView = null;
+
+        lock (_syncRoot)
+        {
+            PlayerData player = GetPlayer(
+                component.GuildId!.Value,
+                component.User.Id);
+
+            if (player.HasCompletedRun)
+            {
+                string displayName = component.User is SocketGuildUser guildUser
+                    ? guildUser.DisplayName
+                    : component.User.Username;
+                sharedView = BuildSharedVictoryView(displayName, player);
+            }
+        }
+
+        if (sharedView is null)
+        {
+            await component.RespondAsync(
+                "That completed run is no longer available.",
+                ephemeral: true);
+            return;
+        }
+
+        await component.RespondAsync(
+            "Sharing your victory result…",
+            ephemeral: true);
+        await component.Channel.SendMessageAsync(
+            components: sharedView,
+            flags: MessageFlags.ComponentsV2);
     }
 
     private async Task HandleClaimAsync(SocketMessageComponent component, string[] parts)
@@ -1039,8 +1151,7 @@ internal sealed class SlotGame : IDisposable
             container.WithTextDisplay(PadResultMessage(result));
 
         container
-            .WithTextDisplay(
-                $"**Balance:** {FormatMoney(player.Balance)} • **Next Spin Bet:**")
+            .WithTextDisplay($"**Balance:** {FormatMoney(player.Balance)}\n" + "**Next Spin Bet:**")
             .WithActionRow(betButtons);
 
         return new ComponentBuilderV2()
@@ -1177,19 +1288,49 @@ internal sealed class SlotGame : IDisposable
 
     private static MessageComponent BuildVictoryView(
         string displayName,
+        PlayerData player)
+    {
+        var actions = new ActionRowBuilder()
+            .WithButton(
+                "Play Again",
+                $"slots:playagain:{player.UserId}",
+                ButtonStyle.Primary,
+                emote: new Emoji("🔄"))
+            .WithButton(
+                "Share Result",
+                $"slots:share:{player.UserId}",
+                ButtonStyle.Success,
+                emote: new Emoji("📣"));
+
+        var container = new ContainerBuilder()
+            .WithAccentColor(new Color(241, 196, 15))
+            .WithTextDisplay(BuildVictoryText(displayName, player))
+            .WithActionRow(actions);
+
+        return new ComponentBuilderV2()
+            .WithContainer(container)
+            .Build();
+    }
+
+    private static MessageComponent BuildSharedVictoryView(
+        string displayName,
         PlayerData player) =>
         new ComponentBuilderV2()
             .WithContainer(container => container
                 .WithAccentColor(new Color(241, 196, 15))
-                .WithTextDisplay(
-                    "# 🏆 Congratulations! 🏆\n" +
-                    $"**{displayName}, you are now a trillionaire!**\n\n" +
-                    $"**Final Balance:** {FormatMoney(player.Balance)}\n" +
-                    "## Run Statistics\n" +
-                    $"**Time Taken:** {FormatDuration(player.RunDuration)}\n" +
-                    $"**Total Spins:** {player.TotalSpins.ToString("N0", CultureInfo.InvariantCulture)}\n" +
-                    $"**Organs Sold:** {player.OrgansSold.ToString("N0", CultureInfo.InvariantCulture)}"))
+                .WithTextDisplay(BuildVictoryText(displayName, player)))
             .Build();
+
+    private static string BuildVictoryText(
+        string displayName,
+        PlayerData player) =>
+        "# 🏆 Congratulations! 🏆\n" +
+        $"**{displayName}, you are now a trillionaire!**\n\n" +
+        $"**Final Balance:** {FormatMoney(player.Balance)}\n" +
+        "## Run Statistics\n" +
+        $"**Time Taken:** {FormatDuration(player.RunDuration)}\n" +
+        $"**Total Spins:** {player.TotalSpins.ToString("N0", CultureInfo.InvariantCulture)}\n" +
+        $"**Organs Sold:** {player.OrgansSold.ToString("N0", CultureInfo.InvariantCulture)}";
 
     private static string FormatDuration(TimeSpan duration)
     {
@@ -1317,6 +1458,14 @@ internal sealed class SlotGame : IDisposable
         sessionId = parts[3];
         betToken = parts[4];
         return true;
+    }
+
+    private static bool TryParseVictoryAction(
+        string[] parts,
+        out ulong userId)
+    {
+        userId = 0;
+        return parts.Length == 3 && ulong.TryParse(parts[2], out userId);
     }
 
     private static bool TryResolveBet(
