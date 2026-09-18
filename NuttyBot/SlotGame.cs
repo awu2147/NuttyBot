@@ -37,6 +37,21 @@ internal sealed class SlotGame : IDisposable
                 [SlotSymbolKey.Custom12] = 784426912948289546,
                 [SlotSymbolKey.Custom13] = 1549839919378333817,
                 [SlotSymbolKey.Custom14] = 1387382724242833419
+            },
+            // Rago Demons
+            [992184140881461350] = new()
+            {
+                // Custom1-Custom5 are intentionally omitted, so the Chud room
+                // currently uses the five default fruit emojis. Add IDs here
+                // whenever you want to replace any of them.
+                [SlotSymbolKey.Custom7] = 1404576307764920320,
+                [SlotSymbolKey.Custom8] = 1403585589663502487,
+                [SlotSymbolKey.Custom9] = 1403585535343198228,
+                [SlotSymbolKey.Custom10] = 1403585374420467782,
+                [SlotSymbolKey.Custom11] = 1403585496999002223,
+                [SlotSymbolKey.Custom12] = 1401901345438437537,
+                [SlotSymbolKey.Custom13] = 1405797511498563658,
+                [SlotSymbolKey.Custom14] = 1401048413532852314
             }
 
             // Add another guild like this:

@@ -11,15 +11,9 @@ namespace NuttyBot
         private static DiscordSocketClient _client = null!;
         private static readonly SlotGame Slots = new();
         private static readonly HttpClient Http = new();
-        private static readonly ulong[] GuildIds =
-        {
-            150436633748045824, //reign_of_prophecy
-            472949270857777152, //nutty
-            901550346785128458  //xo
-        };
         private const ulong DestinationGuildId = 472949270857777152; //nutty
         private const ulong OwnerUserId = 150069097554509825; //mocktail
-        private const ulong YoinkAnnouncementChannelId = 1550204364583608452; //nutty/dev
+        private const ulong YoinkAnnouncementChannelId = 1550204364583608452; //nutty/general
         //private const ulong YoinkAnnouncementChannelId = 472949270857777154; //nutty/dev
         private const string YoinkEmote = "<:evil_cat_smirk:1549875953914740846>";
 
