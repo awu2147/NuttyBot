@@ -3,6 +3,7 @@ namespace NuttyBot;
 internal sealed class PlayerData
 {
     public const long StartingBalance = 100;
+    public const long OrganSaleValue = 20;
 
     public PlayerData(ulong userId)
     {
@@ -12,6 +13,7 @@ internal sealed class PlayerData
 
     public ulong UserId { get; }
     public long Balance { get; private set; }
+    public int OrgansSold { get; private set; }
 
     public bool CanAfford(long amount) => amount > 0 && Balance >= amount;
 
@@ -30,5 +32,14 @@ internal sealed class PlayerData
             throw new ArgumentOutOfRangeException(nameof(amount));
 
         Balance += amount;
+    }
+
+    public void SellOrgan()
+    {
+        checked
+        {
+            OrgansSold++;
+            Balance += OrganSaleValue;
+        }
     }
 }
