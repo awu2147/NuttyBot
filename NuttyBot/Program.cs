@@ -176,7 +176,7 @@ namespace NuttyBot
                 {
                     await guild.CreateApplicationCommandAsync(slotPayoutsCommand.Build());
                 }
-
+#if false
                 var oldSlotCommand = existingCommands.FirstOrDefault(x => x.Name == "rollslots");
 
                 if (oldSlotCommand != null)
@@ -186,7 +186,7 @@ namespace NuttyBot
                     Console.WriteLine(
                         $"Removed /rollslots from {guild.Name}.");
                 }
-
+#endif
             }
             catch (Exception ex)
             {
