@@ -11,39 +11,62 @@ internal sealed class SlotGame : IDisposable
     private const int MachinesPerBatch = 5;
     private const int AdditionalLineBonusPercent = 25;
     private const int ResultMessageMinimumLength = 80;
-    private const ulong CustomEmoji1Id = 1395073563408597154;//1471654909085483009;
-    private const ulong CustomEmoji2Id = 1549875953914740846;
-    private const ulong CustomEmoji3Id = 1549882503072977027;
-    private const ulong CustomEmoji4Id = 698499914593861712;
-    private const ulong CustomEmoji5Id = 1550281140815003708;
-    private const ulong CustomEmoji6Id = 647573467570372639; // Add emoji ID.
-    private const ulong CustomEmoji7Id = 784426912948289546; // Add emoji ID.
-    private const ulong CustomEmoji8Id = 1549839919378333817; // Add emoji ID.
-    private const ulong CustomEmoji9Id = 1387382724242833419; // Add emoji ID.
+    // Optional per-guild custom emoji overrides. The 14 built-in emojis below
+    // are always the defaults; only add entries for symbols a guild overrides.
+    //
+    // Custom1  = 🍒   Custom6  = 🔔   Custom11 = 💰
+    // Custom2  = 🍋   Custom7  = 💎   Custom12 = 🏆
+    // Custom3  = 🍊   Custom8  = 👑   Custom13 = 🔥
+    // Custom4  = 🍇   Custom9  = 🍀   Custom14 = 🌟
+    // Custom5  = 🍉   Custom10 = 🪙
+    private static readonly Dictionary<ulong, Dictionary<SlotSymbolKey, ulong>>
+        GuildCustomEmojiIds = new()
+        {
+            // Nutty
+            [472949270857777152] = new()
+            {
+                // Custom1-Custom5 are intentionally omitted, so the Chud room
+                // currently uses the five default fruit emojis. Add IDs here
+                // whenever you want to replace any of them.
+                [SlotSymbolKey.Custom6] = 1471654909085483009,
+                [SlotSymbolKey.Custom7] = 1549875953914740846,
+                [SlotSymbolKey.Custom8] = 1549882503072977027,
+                [SlotSymbolKey.Custom9] = 698499914593861712,
+                [SlotSymbolKey.Custom10] = 1550281140815003708,
+                [SlotSymbolKey.Custom11] = 647573467570372639,
+                [SlotSymbolKey.Custom12] = 784426912948289546,
+                [SlotSymbolKey.Custom13] = 1549839919378333817,
+                [SlotSymbolKey.Custom14] = 1387382724242833419
+            }
+
+            // Add another guild like this:
+            // [GUILD_ID] = new()
+            // {
+            //     [SlotSymbolKey.Custom1] = EMOJI_ID, // replaces 🍒
+            //     [SlotSymbolKey.Custom5] = EMOJI_ID  // replaces 🍉
+            // }
+        };
+
     private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromSeconds(5);
-    // Custom emoji slots 1-9 are used progressively by the higher rooms.
-    // Replace a 0 with a custom emoji ID from the Discord server.
-    // If an ID is 0 or unavailable, the distinct Unicode fallback is used.
+    // These are the 14 default visuals and payout values. Every position can
+    // optionally be replaced by a guild-specific custom emoji above.
     private static readonly SlotSymbol[] SymbolDefinitions =
     [
-        // Starting-room fruit symbols.
-        new("🍒", 0, 2), // Cherry
-        new("🍋", 0, 3), // Lemon
-        new("🍊", 0, 5), // Orange
-        new("🍇", 0, 8), // Grapes
-        new("🍉", 0, 13), // Watermelon
-
-        // Custom emoji slots. Slots 6-9 are ready for new IDs.
-        new("🔔", CustomEmoji1Id, 20), // Custom 1
-        new("💎", CustomEmoji2Id, 30), // Custom 2
-        new("👑", CustomEmoji3Id, 50), // Custom 3
-        new("🍀", CustomEmoji4Id, 80), // Custom 4
-        new("🪙", CustomEmoji5Id, 130), // Custom 5
-        new("💰", CustomEmoji6Id, 200), // Custom 6
-        new("🏆", CustomEmoji7Id, 300), // Custom 7
-        new("🔥", CustomEmoji8Id, 500), // Custom 8
-        new("🌟", CustomEmoji9Id, 800) // Custom 9
+        new(SlotSymbolKey.Custom1, "🍒", 2),
+        new(SlotSymbolKey.Custom2, "🍋", 3),
+        new(SlotSymbolKey.Custom3, "🍊", 5),
+        new(SlotSymbolKey.Custom4, "🍇", 8),
+        new(SlotSymbolKey.Custom5, "🍉", 13),
+        new(SlotSymbolKey.Custom6, "🔔", 20),
+        new(SlotSymbolKey.Custom7, "💎", 30),
+        new(SlotSymbolKey.Custom8, "👑", 50),
+        new(SlotSymbolKey.Custom9, "🍀", 80),
+        new(SlotSymbolKey.Custom10, "🪙", 130),
+        new(SlotSymbolKey.Custom11, "💰", 200),
+        new(SlotSymbolKey.Custom12, "🏆", 300),
+        new(SlotSymbolKey.Custom13, "🔥", 500),
+        new(SlotSymbolKey.Custom14, "🌟", 800)
     ];
     private static readonly int[][] RoomSymbolIndexes =
     [
@@ -1826,12 +1849,13 @@ internal sealed class SlotGame : IDisposable
         SlotSymbol symbol)
     {
         string displayEmoji = symbol.FallbackEmoji;
+        ulong customEmojiId = GetCustomEmojiId(guild, symbol);
 
-        if (symbol.CustomEmojiId != 0 && guild is not null)
+        if (customEmojiId != 0 && guild is not null)
         {
             foreach (GuildEmote customEmoji in guild.Emotes)
             {
-                if (customEmoji.Id != symbol.CustomEmojiId)
+                if (customEmoji.Id != customEmojiId)
                     continue;
 
                 if (customEmoji.IsAvailable == true)
@@ -1844,6 +1868,22 @@ internal sealed class SlotGame : IDisposable
         return new ResolvedSlotSymbol(
             displayEmoji,
             symbol.LineMultiplier);
+    }
+
+    private static ulong GetCustomEmojiId(
+        SocketGuild? guild,
+        SlotSymbol symbol)
+    {
+        if (guild is not null &&
+            GuildCustomEmojiIds.TryGetValue(
+                guild.Id,
+                out Dictionary<SlotSymbolKey, ulong>? guildEmojiIds) &&
+            guildEmojiIds.TryGetValue(symbol.Key, out ulong guildEmojiId))
+        {
+            return guildEmojiId;
+        }
+
+        return 0;
     }
 
     private static string FormatCompactAmount(long amount)
@@ -2511,9 +2551,27 @@ internal sealed class SlotGame : IDisposable
         string Result);
 
 
+    internal enum SlotSymbolKey
+    {
+        Custom1,
+        Custom2,
+        Custom3,
+        Custom4,
+        Custom5,
+        Custom6,
+        Custom7,
+        Custom8,
+        Custom9,
+        Custom10,
+        Custom11,
+        Custom12,
+        Custom13,
+        Custom14
+    }
+
     internal sealed record SlotSymbol(
+        SlotSymbolKey Key,
         string FallbackEmoji,
-        ulong CustomEmojiId,
         int LineMultiplier);
 
     internal sealed record ResolvedSlotSymbol(
