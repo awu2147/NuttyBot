@@ -9,24 +9,53 @@ internal sealed class SlotGame : IDisposable
     private const int MachinesPerBatch = 5;
     private const int AdditionalLineBonusPercent = 25;
     private const int ResultMessageMinimumLength = 80;
+    private const ulong CustomEmoji1Id = 1471654909085483009;
+    private const ulong CustomEmoji2Id = 1549875953914740846;
+    private const ulong CustomEmoji3Id = 1549882503072977027;
+    private const ulong CustomEmoji4Id = 698499914593861712;
+    private const ulong CustomEmoji5Id = 1550281140815003708;
+    private const ulong CustomEmoji6Id = 647573467570372639; // Add emoji ID.
+    private const ulong CustomEmoji7Id = 784426912948289546; // Add emoji ID.
+    private const ulong CustomEmoji8Id = 1549839919378333817; // Add emoji ID.
+    private const ulong CustomEmoji9Id = 1387382724242833419; // Add emoji ID.
     private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromSeconds(5);
-    // Replace any 0 below with a custom emoji ID from the Discord server.
-    // If that emoji cannot be found in the current server, the fruit is used instead.
+    // Custom emoji slots 1-9 are used progressively by the higher rooms.
+    // Replace a 0 with a custom emoji ID from the Discord server.
+    // If an ID is 0 or unavailable, the distinct Unicode fallback is used.
     private static readonly SlotSymbol[] SymbolDefinitions =
     [
-        new("🍒", 1471654909085483009, 8), // Cherry
-        new("🍋", 1549875953914740846, 10), // Lemon
-        new("🍊", 1549882503072977027, 12), // Orange
-        new("🍇", 698499914593861712, 15), // Grapes
-        new("⭐", 1550281140815003708, 20)  // Star
+        // Starting-room fruit symbols.
+        new("🍒", 0, 2), // Cherry
+        new("🍋", 0, 3), // Lemon
+        new("🍊", 0, 5), // Orange
+        new("🍇", 0, 8), // Grapes
+        new("🍉", 0, 13), // Watermelon
+
+        // Custom emoji slots. Slots 6-9 are ready for new IDs.
+        new("🔔", CustomEmoji1Id, 20), // Custom 1
+        new("💎", CustomEmoji2Id, 30), // Custom 2
+        new("👑", CustomEmoji3Id, 50), // Custom 3
+        new("🍀", CustomEmoji4Id, 80), // Custom 4
+        new("🪙", CustomEmoji5Id, 130), // Custom 5
+        new("💰", CustomEmoji6Id, 200), // Custom 6
+        new("🏆", CustomEmoji7Id, 300), // Custom 7
+        new("🔥", CustomEmoji8Id, 500), // Custom 8
+        new("🌟", CustomEmoji9Id, 800) // Custom 9
+    ];
+    private static readonly int[][] RoomSymbolIndexes =
+    [
+        [0, 1, 2, 3, 4],     // $0: five fruits
+        [3, 4, 5, 6, 7],     // $1K: top two below + three new
+        [6, 7, 8, 9, 10],    // $1M: top two below + three new
+        [9, 10, 11, 12, 13]  // $1B: top two below + three new
     ];
     private static readonly MachineBatch[] MachineBatches =
     [
         new(0, 0, [1, 10, 50], "$0", "🟦", new Color(52, 152, 219)),
-        new(1, 1_000, [10, 100, 500], "$1K", "🟪", new Color(155, 89, 182)),
-        new(2, 1_000_000, [10_000, 100_000, 500_000], "$1M", "🟥", new Color(231, 76, 60)),
-        new(3, 1_000_000_000, [10_000_000, 100_000_000, 500_000_000], "$1B", "🟨", new Color(241, 196, 15))
+        new(1, 1_000, [100, 1000, 5000], "$1K", "🟪", new Color(155, 89, 182)),
+        new(2, 1_000_000, [100_000, 1_000_000, 5_000_000], "$1M", "🟥", new Color(231, 76, 60)),
+        new(3, 1_000_000_000, [100_000_000, 1_000_000_000, 5_000_000_000], "$1B", "🟨", new Color(241, 196, 15))
     ];
 
     private readonly object _syncRoot = new();
@@ -218,8 +247,10 @@ internal sealed class SlotGame : IDisposable
                 SlotMachine claimedMachine = machine!;
                 claimedMachine.Message = component.Message;
                 claimedMachine.Player = player;
-                IReadOnlyList<string> symbols = ResolveSymbols(component);
-                string[,] idleReels = BuildIdleReels(symbols);
+                IReadOnlyList<ResolvedSlotSymbol> symbols = ResolveSymbols(
+                    component,
+                    claimedMachine.Batch);
+                ResolvedSlotSymbol[,] idleReels = BuildIdleReels(symbols);
                 var idleWinningCells = new bool[3, 3];
                 claimedMachine.LastReels = idleReels;
                 claimedMachine.LastWinningCells = idleWinningCells;
@@ -277,7 +308,9 @@ internal sealed class SlotGame : IDisposable
                 machine.LastResult =
                     $"🫀 Sold an organ for {FormatMoney(PlayerData.OrganSaleValue)}.";
 
-                IReadOnlyList<string> symbols = ResolveSymbols(component);
+                IReadOnlyList<ResolvedSlotSymbol> symbols = ResolveSymbols(
+                    component,
+                    machine.Batch);
                 view = BuildMachineView(
                     machine,
                     player,
@@ -404,7 +437,9 @@ internal sealed class SlotGame : IDisposable
                 else
                 {
                     machine.Message = component.Message;
-                    IReadOnlyList<string> symbols = ResolveSymbols(component);
+                    IReadOnlyList<ResolvedSlotSymbol> symbols = ResolveSymbols(
+                        component,
+                        machine.Batch);
                     SpinResult spin = Spin(
                         machine,
                         player,
@@ -886,8 +921,8 @@ internal sealed class SlotGame : IDisposable
     private static MessageComponent BuildMachineView(
         SlotMachine machine,
         PlayerData player,
-        IReadOnlyList<string> symbols,
-        string[,] reels,
+        IReadOnlyList<ResolvedSlotSymbol> symbols,
+        ResolvedSlotSymbol[,] reels,
         bool[,] winningCells,
         string? result)
     {
@@ -927,8 +962,8 @@ internal sealed class SlotGame : IDisposable
 
         string linePayouts = string.Join(
             " • ",
-            SymbolDefinitions.Select((symbol, index) =>
-                $"{symbols[index]} ×{symbol.LineMultiplier}"));
+            symbols.Select(symbol =>
+                $"{symbol.DisplayEmoji} ×{symbol.LineMultiplier}"));
 
         string machineInformation =
             $"**Line Payouts:** {linePayouts}\n" +
@@ -968,7 +1003,7 @@ internal sealed class SlotGame : IDisposable
 
     private static ActionRowBuilder BuildReelRow(
         SlotMachine machine,
-        string[,] reels,
+        ResolvedSlotSymbol[,] reels,
         bool[,] winningCells,
         int row,
         bool includeLever = false)
@@ -985,7 +1020,8 @@ internal sealed class SlotGame : IDisposable
                         winningCells[row, column]
                             ? ButtonStyle.Success
                             : ButtonStyle.Secondary)
-                    .WithEmote(ParseReelEmote(reels[row, column])));
+                    .WithEmote(ParseReelEmote(
+                        reels[row, column].DisplayEmoji)));
         }
 
         if (includeLever)
@@ -1017,7 +1053,8 @@ internal sealed class SlotGame : IDisposable
             Enumerable.Repeat("\u200B\u2800", paddingLength));
     }
 
-    private static string[,] BuildIdleReels(IReadOnlyList<string> symbols) =>
+    private static ResolvedSlotSymbol[,] BuildIdleReels(
+        IReadOnlyList<ResolvedSlotSymbol> symbols) =>
         new[,]
         {
             { symbols[0], symbols[1], symbols[2] },
@@ -1025,23 +1062,35 @@ internal sealed class SlotGame : IDisposable
             { symbols[2], symbols[4], symbols[1] }
         };
 
-    private static IReadOnlyList<string> ResolveSymbols(
-        SocketMessageComponent component)
+    private static IReadOnlyList<ResolvedSlotSymbol> ResolveSymbols(
+        SocketMessageComponent component,
+        MachineBatch batch)
     {
         SocketGuild? guild = (component.Channel as SocketGuildChannel)?.Guild;
 
-        return SymbolDefinitions
+        return RoomSymbolIndexes[batch.Index]
+            .Select(symbolIndex => SymbolDefinitions[symbolIndex])
             .Select(symbol =>
             {
+                string displayEmoji;
+
                 if (symbol.CustomEmojiId == 0 || guild is null)
-                    return symbol.FallbackEmoji;
+                {
+                    displayEmoji = symbol.FallbackEmoji;
+                }
+                else
+                {
+                    var customEmoji = guild.Emotes
+                        .FirstOrDefault(emote => emote.Id == symbol.CustomEmojiId);
 
-                var customEmoji = guild.Emotes
-                    .FirstOrDefault(emote => emote.Id == symbol.CustomEmojiId);
+                    displayEmoji = customEmoji is { IsAvailable: true }
+                        ? customEmoji.ToString()
+                        : symbol.FallbackEmoji;
+                }
 
-                return customEmoji is { IsAvailable: true }
-                    ? customEmoji.ToString()
-                    : symbol.FallbackEmoji;
+                return new ResolvedSlotSymbol(
+                    displayEmoji,
+                    symbol.LineMultiplier);
             })
             .ToArray();
     }
@@ -1216,12 +1265,12 @@ internal sealed class SlotGame : IDisposable
         SlotMachine machine,
         PlayerData player,
         long betAmount,
-        IReadOnlyList<string> symbols)
+        IReadOnlyList<ResolvedSlotSymbol> symbols)
     {
         if (!player.TrySpend(betAmount))
             throw new InvalidOperationException("The player cannot afford this spin.");
 
-        string[,] slots = new string[3, 3];
+        var slots = new ResolvedSlotSymbol[3, 3];
 
         for (int row = 0; row < 3; row++)
         {
@@ -1237,7 +1286,7 @@ internal sealed class SlotGame : IDisposable
             int row2, int column2,
             int row3, int column3)
         {
-            string symbol = slots[row1, column1];
+            ResolvedSlotSymbol symbol = slots[row1, column1];
 
             if (symbol != slots[row2, column2] ||
                 symbol != slots[row3, column3])
@@ -1245,26 +1294,12 @@ internal sealed class SlotGame : IDisposable
                 return;
             }
 
-            int symbolIndex = -1;
-
-            for (int index = 0; index < symbols.Count; index++)
-            {
-                if (symbols[index] == symbol)
-                {
-                    symbolIndex = index;
-                    break;
-                }
-            }
-
-            if (symbolIndex >= 0)
-            {
-                winningLines.Add(new WinningLine(
-                    symbol,
-                    SymbolDefinitions[symbolIndex].LineMultiplier));
-                winningCells[row1, column1] = true;
-                winningCells[row2, column2] = true;
-                winningCells[row3, column3] = true;
-            }
+            winningLines.Add(new WinningLine(
+                symbol.DisplayEmoji,
+                symbol.LineMultiplier));
+            winningCells[row1, column1] = true;
+            winningCells[row2, column2] = true;
+            winningCells[row3, column3] = true;
         }
 
         for (int row = 0; row < 3; row++)
@@ -1366,7 +1401,7 @@ internal sealed class SlotGame : IDisposable
     }
 
     private sealed record SpinResult(
-        string[,] Reels,
+        ResolvedSlotSymbol[,] Reels,
         bool[,] WinningCells,
         string Result);
 
@@ -1375,6 +1410,10 @@ internal sealed class SlotGame : IDisposable
     private sealed record SlotSymbol(
         string FallbackEmoji,
         ulong CustomEmojiId,
+        int LineMultiplier);
+
+    private sealed record ResolvedSlotSymbol(
+        string DisplayEmoji,
         int LineMultiplier);
 
     private sealed class LobbySession(
@@ -1412,7 +1451,7 @@ internal sealed class SlotGame : IDisposable
         public DateTimeOffset LastInteractionUtc { get; set; }
         public IUserMessage? Message { get; set; }
         public PlayerData? Player { get; set; }
-        public string[,]? LastReels { get; set; }
+        public ResolvedSlotSymbol[,]? LastReels { get; set; }
         public bool[,]? LastWinningCells { get; set; }
         public string? LastResult { get; set; }
         public int TotalRolls { get; set; }
