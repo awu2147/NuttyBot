@@ -148,6 +148,7 @@ namespace NuttyBot
                         isRequired: true);
 
                 var slotCommand = SlotGame.CreateCommand();
+                var slotSpeedCommand = SlotGame.CreateSpeedCommand();
 
                 if (!existingCommands.Any(x => x.Name == "addemoji"))
                 {
@@ -157,6 +158,11 @@ namespace NuttyBot
                 if (!existingCommands.Any(x => x.Name == "slots"))
                 {
                     await guild.CreateApplicationCommandAsync(slotCommand.Build());
+                }
+
+                if (!existingCommands.Any(x => x.Name == "slotsspeed"))
+                {
+                    await guild.CreateApplicationCommandAsync(slotSpeedCommand.Build());
                 }
 
                 var oldSlotCommand = existingCommands.FirstOrDefault(x => x.Name == "rollslots");
@@ -187,6 +193,10 @@ namespace NuttyBot
 
                 case "slots":
                     await Slots.HandleSlashCommandAsync(command);
+                    break;
+
+                case "slotsspeed":
+                    await Slots.HandleSpeedSlashCommandAsync(command);
                     break;
             }
         }
