@@ -838,11 +838,9 @@ internal sealed class SlotGame : IDisposable
             batchButtons.WithButton(
                 availableBatch.ButtonLabel,
                 $"slots:batch:{userId}:{lobbyId}:{availableBatch.Index}",
-                !canAccess
-                    ? ButtonStyle.Secondary
-                    : availableBatch.Index == batch.Index
-                        ? ButtonStyle.Success
-                        : ButtonStyle.Primary,
+                availableBatch.Index == batch.Index
+                    ? ButtonStyle.Primary
+                    : ButtonStyle.Secondary,
                 emote: new Emoji(availableBatch.ColorEmoji),
                 disabled: !canAccess);
         }
@@ -866,7 +864,7 @@ internal sealed class SlotGame : IDisposable
         }
 
         container
-            .WithTextDisplay($"**{statusName} Room [{FormatMoney(batch.RequiredBalance)}+]**")
+            .WithTextDisplay($"**{statusName} Room ({FormatMoney(batch.RequiredBalance)}+)**")
             .WithActionRow(batchButtons);
 
         return new ComponentBuilderV2()
