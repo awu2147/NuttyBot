@@ -197,6 +197,14 @@ internal sealed class SlotGame : IDisposable
                 await HandleLobbySellOrganAsync(component, parts);
                 break;
 
+            case "reset":
+                await HandleResetRunAsync(component, parts);
+                break;
+
+            case "lobbyreset":
+                await HandleLobbyResetRunAsync(component, parts);
+                break;
+
             case "playagain":
                 await HandlePlayAgainAsync(component, parts);
                 break;
@@ -210,6 +218,126 @@ internal sealed class SlotGame : IDisposable
                 await component.DeferAsync();
                 break;
         }
+    }
+
+    private async Task HandleResetRunAsync(
+        SocketMessageComponent component,
+        string[] parts)
+    {
+        if (!TryParseMachineSession(parts, out int machineId, out string sessionId))
+            return;
+
+        MessageComponent? view = null;
+        bool invalidSession;
+
+        lock (_syncRoot)
+        {
+            ExpireSessions();
+            ulong guildId = component.GuildId!.Value;
+            SlotMachine? machine = FindOwnedMachine(
+                guildId,
+                component.User.Id,
+                machineId,
+                sessionId);
+
+            invalidSession = machine is null;
+
+            if (machine is not null)
+            {
+                PlayerData player = GetPlayer(guildId, component.User.Id);
+                string displayName = machine.OwnerDisplayName ?? component.User.Username;
+
+                ReleaseMachine(machine);
+                CloseLobby(guildId, component.User.Id);
+                player.ResetRun();
+
+                string lobbyId = CreateLobby(
+                    guildId,
+                    component.User.Id,
+                    displayName,
+                    player,
+                    component.Message);
+                view = BuildLobbyView(
+                    guildId,
+                    component.User.Id,
+                    lobbyId,
+                    batchIndex: 0);
+            }
+        }
+
+        if (invalidSession)
+        {
+            await RespondSessionExpiredAsync(component);
+            return;
+        }
+
+        await UpdateMessageAsync(component, view!);
+    }
+
+    private async Task HandleLobbyResetRunAsync(
+        SocketMessageComponent component,
+        string[] parts)
+    {
+        if (parts.Length != 4 ||
+            !ulong.TryParse(parts[2], out ulong lobbyUserId))
+        {
+            return;
+        }
+
+        if (component.User.Id != lobbyUserId)
+        {
+            await component.RespondAsync(
+                "This isn't your slot lobby!",
+                ephemeral: true);
+            return;
+        }
+
+        ulong guildId = component.GuildId!.Value;
+        string oldLobbyId = parts[3];
+        MessageComponent? view = null;
+        bool invalidLobby;
+
+        lock (_syncRoot)
+        {
+            ExpireSessions();
+            invalidLobby = !TryGetCurrentLobby(
+                guildId,
+                component.User.Id,
+                oldLobbyId,
+                out LobbySession? lobby);
+
+            if (!invalidLobby)
+            {
+                PlayerData player = GetPlayer(guildId, component.User.Id);
+                string displayName = lobby!.DisplayName;
+
+                CloseLobby(guildId, component.User.Id);
+                ReleaseUserMachine(guildId, component.User.Id);
+                player.ResetRun();
+
+                string newLobbyId = CreateLobby(
+                    guildId,
+                    component.User.Id,
+                    displayName,
+                    player,
+                    component.Message);
+                view = BuildLobbyView(
+                    guildId,
+                    component.User.Id,
+                    newLobbyId,
+                    batchIndex: 0);
+            }
+        }
+
+        if (invalidLobby)
+        {
+            await component.RespondAsync(
+                "That slot lobby is no longer active. Use `/slots` again.",
+                ephemeral: true);
+            return;
+        }
+
+        await UpdateMessageAsync(component, view!);
     }
 
     private async Task HandlePlayAgainAsync(
@@ -990,6 +1118,10 @@ internal sealed class SlotGame : IDisposable
                 ButtonStyle.Danger,
                 emote: new Emoji("🫀"))
             .WithButton(
+                "🧠🔫",
+                $"slots:lobbyreset:{userId}:{lobbyId}",
+                ButtonStyle.Danger)
+            .WithButton(
                 "Leave Casino",
                 $"slots:lobbyleave:{userId}:{lobbyId}",
                 ButtonStyle.Secondary,
@@ -1096,6 +1228,10 @@ internal sealed class SlotGame : IDisposable
                 $"slots:sell:{machine.Id}:{machine.SessionId}",
                 ButtonStyle.Danger,
                 emote: new Emoji("🫀"))
+            .WithButton(
+                "🔫🧠",
+                $"slots:reset:{machine.Id}:{machine.SessionId}",
+                ButtonStyle.Danger)
             .WithButton(
                 "Leave Casino",
                 $"slots:leave:{machine.Id}:{machine.SessionId}",
