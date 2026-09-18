@@ -44,6 +44,7 @@ internal sealed class SlotGame : IDisposable
                 // Custom1-Custom5 are intentionally omitted, so the Chud room
                 // currently uses the five default fruit emojis. Add IDs here
                 // whenever you want to replace any of them.
+                [SlotSymbolKey.Custom6] = 1060611362415464499,
                 [SlotSymbolKey.Custom7] = 1404576307764920320,
                 [SlotSymbolKey.Custom8] = 1403585589663502487,
                 [SlotSymbolKey.Custom9] = 1403585535343198228,
