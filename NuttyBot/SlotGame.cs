@@ -6,17 +6,27 @@ namespace NuttyBot;
 
 internal sealed class SlotGame : IDisposable
 {
+    private const string ReelRowPrefix = "# ";
     private const int MachinesPerBatch = 5;
     private const long WinMultiplier = 100;
     private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromSeconds(5);
-    private static readonly string[] Symbols = ["🍒", "🍋", "🍊", "🍇", "⭐"];
+    // Replace any 0 below with a custom emoji ID from the Discord server.
+    // If that emoji cannot be found in the current server, the fruit is used instead.
+    private static readonly SlotSymbol[] SymbolDefinitions =
+    [
+        new(":cherries:", 1471654909085483009), // Cherry
+        new(":lemon:", 1549875953914740846), // Lemon
+        new(":tangerine:", 1549882503072977027), // Orange
+        new(":grapes:", 698499914593861712), // Grapes
+        new(":star:", 1550281140815003708)  // Star
+    ];
     private static readonly MachineBatch[] MachineBatches =
     [
-        new(0, 0, [1, 10, 50], "$0", "🟦"),
-        new(1, 1_000, [10, 100, 500], "$1K", "🟪"),
-        new(2, 1_000_000, [10_000, 100_000, 500_000], "$1M", "🟥"),
-        new(3, 1_000_000_000, [10_000_000, 100_000_000, 500_000_000], "$1B", "🟨")
+        new(0, 0, [1, 10, 50], "$0", "🟦", new Color(52, 152, 219)),
+        new(1, 1_000, [10, 100, 500], "$1K", "🟪", new Color(155, 89, 182)),
+        new(2, 1_000_000, [10_000, 100_000, 500_000], "$1M", "🟥", new Color(231, 76, 60)),
+        new(3, 1_000_000_000, [10_000_000, 100_000_000, 500_000_000], "$1B", "🟨", new Color(241, 196, 15))
     ];
 
     private readonly object _syncRoot = new();
@@ -195,10 +205,11 @@ internal sealed class SlotGame : IDisposable
                 SlotMachine claimedMachine = machine!;
                 claimedMachine.Message = component.Message;
                 claimedMachine.Player = player;
+                IReadOnlyList<string> symbols = ResolveSymbols(component);
                 view = BuildMachineView(
                     claimedMachine,
                     player,
-                    machineDisplay: BuildIdleMachineDisplay(),
+                    machineDisplay: BuildIdleMachineDisplay(symbols),
                     result: "Choose a bet when you're ready.");
             }
         }
@@ -267,7 +278,11 @@ internal sealed class SlotGame : IDisposable
                 else
                 {
                     machine.Message = component.Message;
-                    SpinResult spin = Spin(machine, player, betAmount);
+                    SpinResult spin = Spin(
+                        machine,
+                        player,
+                        betAmount,
+                        ResolveSymbols(component));
                     view = BuildMachineView(
                         machine,
                         player,
@@ -653,7 +668,7 @@ internal sealed class SlotGame : IDisposable
                 emote: new Emoji("🚪"));
 
         var container = new ContainerBuilder()
-            .WithAccentColor(new Color(0, 200, 220))
+            .WithAccentColor(batch.AccentColor)
             .WithTextDisplay(
                 $"**Player:** {displayName}\n" +
                 $"**Balance:** {FormatMoney(player.Balance)}")
@@ -770,38 +785,57 @@ internal sealed class SlotGame : IDisposable
                 ButtonStyle.Danger,
                 disabled: player.Balance <= 0);
 
-        string display =
-            $"### 🎰 Slot Machine {machine.Number} 🎰\n\n";
+        string display = string.Empty;
+
+        display +=
+            $"**Win Multiplier:** ×{WinMultiplier}\n" +
+            $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins\n";
 
         if (machineDisplay is not null)
-            display += $"```text\n{machineDisplay}\n```\n";
+            display += $"{machineDisplay}\n\u2800\n";
 
         if (result is not null)
             display += $"{result}\n\n";
 
-        display +=
-            $"**Win Multiplier:** ×{WinMultiplier}\n" +
-            $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins";
-
         return new ComponentBuilderV2()
             .WithContainer(container => container
-                .WithAccentColor(new Color(0, 200, 220))
+                .WithAccentColor(machine.Batch.AccentColor)
                 .WithTextDisplay(
                     $"**Player:** {machine.OwnerDisplayName ?? "Unknown player"}\n" +
                     $"**Balance:** {FormatMoney(player.Balance)}")
                 .WithActionRow(navigationButtons)
+                .WithTextDisplay($"## 🎰 Slot Machine {machine.Number} 🎰\n\n")
                 .WithTextDisplay(display)
                 .WithTextDisplay("**Bet on Spin:**")
                 .WithActionRow(betButtons))
             .Build();
     }
 
-    private static string BuildIdleMachineDisplay() =>
-        "┌───────────┐\n" +
-        "│ 🍒  🍋  🍊 │\n" +
-        "│ ⭐  🍇  🍒 │ ⬅️\n" +
-        "│ 🍊  ⭐  🍋 │\n" +
-        "└───────────┘";
+    private static string BuildIdleMachineDisplay(IReadOnlyList<string> symbols) =>
+        $"{ReelRowPrefix}~~ {symbols[0]}  {symbols[1]}  {symbols[2]} ~~\n" +
+        $"{ReelRowPrefix}~~ {symbols[4]}  {symbols[3]}  {symbols[0]}  ⬅️~~\n" +
+        $"{ReelRowPrefix}~~ {symbols[2]}  {symbols[4]}  {symbols[1]} ~~\n";
+
+    private static IReadOnlyList<string> ResolveSymbols(
+        SocketMessageComponent component)
+    {
+        SocketGuild? guild = (component.Channel as SocketGuildChannel)?.Guild;
+
+        return SymbolDefinitions
+            .Select(symbol =>
+            {
+                if (symbol.CustomEmojiId == 0 || guild is null)
+                    return symbol.FallbackEmoji;
+
+                var customEmoji = guild.Emotes
+                    .FirstOrDefault(emote => emote.Id == symbol.CustomEmojiId);
+
+                return customEmoji is { IsAvailable: true }
+                    ? customEmoji.ToString()
+                    : symbol.FallbackEmoji;
+            })
+            .ToArray();
+    }
 
     private static string FormatCompactAmount(long amount)
     {
@@ -969,7 +1003,8 @@ internal sealed class SlotGame : IDisposable
     private static SpinResult Spin(
         SlotMachine machine,
         PlayerData player,
-        long betAmount)
+        long betAmount,
+        IReadOnlyList<string> symbols)
     {
         if (!player.TrySpend(betAmount))
             throw new InvalidOperationException("The player cannot afford this spin.");
@@ -979,7 +1014,7 @@ internal sealed class SlotGame : IDisposable
         for (int row = 0; row < 3; row++)
         {
             for (int column = 0; column < 3; column++)
-                slots[row, column] = Symbols[Random.Shared.Next(Symbols.Length)];
+                slots[row, column] = symbols[Random.Shared.Next(symbols.Count)];
         }
 
         bool winner =
@@ -1001,11 +1036,9 @@ internal sealed class SlotGame : IDisposable
         }
 
         string machineDisplay =
-            $"┌───────────┐\n" +
-            $"│ {slots[0, 0]}  {slots[0, 1]}  {slots[0, 2]} │\n" +
-            $"│ {slots[1, 0]}  {slots[1, 1]}  {slots[1, 2]} │ ⬅️\n" +
-            $"│ {slots[2, 0]}  {slots[2, 1]}  {slots[2, 2]} │\n" +
-            "└───────────┘";
+            $"{ReelRowPrefix}~~ {slots[0, 0]}  {slots[0, 1]}  {slots[0, 2]} ~~\n" +
+            $"{ReelRowPrefix}~~ {slots[1, 0]}  {slots[1, 1]}  {slots[1, 2]}  ⬅️~~\n" +
+            $"{ReelRowPrefix}~~ {slots[2, 0]}  {slots[2, 1]}  {slots[2, 2]} ~~\n";
 
         string result = winner
             ? $"🎉 **JACKPOT! You won {FormatMoney(payout)}!** 🎉"
@@ -1071,6 +1104,8 @@ internal sealed class SlotGame : IDisposable
 
     private sealed record SpinResult(string MachineDisplay, string Result);
 
+    private sealed record SlotSymbol(string FallbackEmoji, ulong CustomEmojiId);
+
     private sealed class LobbySession(
         string id,
         string displayName,
@@ -1089,7 +1124,8 @@ internal sealed class SlotGame : IDisposable
         long RequiredBalance,
         long[] BetAmounts,
         string ButtonLabel,
-        string ColorEmoji);
+        string ColorEmoji,
+        Color AccentColor);
 
     private sealed class SlotMachine(
         int id,
