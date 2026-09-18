@@ -75,6 +75,14 @@ internal sealed class SlotGame : IDisposable
         .WithName("slotsspeed")
         .WithDescription("Start a lobby-free slots speed run");
 
+    public static SlashCommandBuilder CreateLeaderboardCommand() => new SlashCommandBuilder()
+        .WithName("slotsleaderboard")
+        .WithDescription("Show the server slots leaderboard");
+
+    public static SlashCommandBuilder CreatePayoutsCommand() => new SlashCommandBuilder()
+        .WithName("slotspayouts")
+        .WithDescription("Show all slot symbol payout multipliers");
+
     public void Start()
     {
         _cleanupTimer ??= new Timer(
@@ -211,6 +219,43 @@ internal sealed class SlotGame : IDisposable
         {
             Console.WriteLine($"Failed to track a speed slot message: {ex.Message}");
         }
+    }
+
+    public async Task HandleLeaderboardSlashCommandAsync(SocketSlashCommand command)
+    {
+        if (!command.GuildId.HasValue)
+        {
+            await command.RespondAsync(
+                "The slots leaderboard can only be viewed inside a server.",
+                ephemeral: true);
+            return;
+        }
+
+        MessageComponent view;
+
+        lock (_syncRoot)
+        {
+            view = BuildLeaderboardView(command.GuildId.Value);
+        }
+
+        await command.RespondAsync(
+            components: view,
+            flags: MessageFlags.ComponentsV2);
+    }
+
+    public async Task HandlePayoutsSlashCommandAsync(SocketSlashCommand command)
+    {
+        if (!command.GuildId.HasValue)
+        {
+            await command.RespondAsync(
+                "Slot payouts can only be viewed inside a server.",
+                ephemeral: true);
+            return;
+        }
+
+        await command.RespondAsync(
+            components: BuildPayoutsView(command),
+            flags: MessageFlags.ComponentsV2);
     }
 
     private static MessageComponent BuildInitialMachineView(
@@ -1679,33 +1724,35 @@ internal sealed class SlotGame : IDisposable
 
     private static IReadOnlyList<ResolvedSlotSymbol> ResolveSymbols(
         SocketGuild? guild,
-        MachineBatch batch)
-    {
-        return RoomSymbolIndexes[batch.Index]
+        MachineBatch batch) =>
+        RoomSymbolIndexes[batch.Index]
             .Select(symbolIndex => SymbolDefinitions[symbolIndex])
-            .Select(symbol =>
-            {
-                string displayEmoji;
-
-                if (symbol.CustomEmojiId == 0 || guild is null)
-                {
-                    displayEmoji = symbol.FallbackEmoji;
-                }
-                else
-                {
-                    var customEmoji = guild.Emotes
-                        .FirstOrDefault(emote => emote.Id == symbol.CustomEmojiId);
-
-                    displayEmoji = customEmoji is { IsAvailable: true }
-                        ? customEmoji.ToString()
-                        : symbol.FallbackEmoji;
-                }
-
-                return new ResolvedSlotSymbol(
-                    displayEmoji,
-                    symbol.LineMultiplier);
-            })
+            .Select(symbol => ResolveSymbol(guild, symbol))
             .ToArray();
+
+    private static ResolvedSlotSymbol ResolveSymbol(
+        SocketGuild? guild,
+        SlotSymbol symbol)
+    {
+        string displayEmoji;
+
+        if (symbol.CustomEmojiId == 0 || guild is null)
+        {
+            displayEmoji = symbol.FallbackEmoji;
+        }
+        else
+        {
+            var customEmoji = guild.Emotes
+                .FirstOrDefault(emote => emote.Id == symbol.CustomEmojiId);
+
+            displayEmoji = customEmoji is { IsAvailable: true }
+                ? customEmoji.ToString()
+                : symbol.FallbackEmoji;
+        }
+
+        return new ResolvedSlotSymbol(
+            displayEmoji,
+            symbol.LineMultiplier);
     }
 
     private static string FormatCompactAmount(long amount)
@@ -1742,6 +1789,61 @@ internal sealed class SlotGame : IDisposable
                     $"{displayName} has left the casino with a balance of {FormatMoney(balance)}." +
                     (detail is null ? string.Empty : $"\n{detail}")))
             .Build();
+
+    private MessageComponent BuildLeaderboardView(ulong guildId)
+    {
+        string leaderboard = BuildLeaderboardText(guildId);
+
+        return new ComponentBuilderV2()
+            .WithContainer(container => container
+                .WithAccentColor(new Color(241, 196, 15))
+                .WithTextDisplay(
+                    "# 🏆 Slots Leaderboard 🏆\n" +
+                    "Ranked by **fewest spins**, then **fewest organs sold**. " +
+                    "Exact ties go to whoever set the record first.\n\n" +
+                    leaderboard))
+            .Build();
+    }
+
+    private static MessageComponent BuildPayoutsView(SocketSlashCommand command)
+    {
+        SocketGuild? guild = (command.Channel as SocketGuildChannel)?.Guild;
+        string payouts = string.Join(
+            "\n",
+            SymbolDefinitions
+                .Select(symbol => ResolveSymbol(guild, symbol))
+                .OrderBy(symbol => symbol.LineMultiplier)
+                .Select(symbol =>
+                    $"{symbol.DisplayEmoji}  **×{symbol.LineMultiplier}**"));
+
+        return new ComponentBuilderV2()
+            .WithContainer(container => container
+                .WithAccentColor(new Color(52, 152, 219))
+                .WithTextDisplay(
+                    "# 🎰 Slot Payouts\n" +
+                    "Each multiplier applies to a completed winning line.\n\n" +
+                    payouts +
+                    $"\n\n**Multi-Line Bonus:** +{AdditionalLineBonusPercent}% per extra winning line"))
+            .Build();
+    }
+
+    private string BuildLeaderboardText(ulong guildId)
+    {
+        string[] medals = ["🥇", "🥈", "🥉"];
+        IReadOnlyList<SlotLeaderboardEntry> leaders =
+            _leaderboard.GetTopThree(guildId);
+
+        if (leaders.Count == 0)
+            return "No completed runs yet.";
+
+        return string.Join(
+            "\n",
+            leaders.Select((entry, index) =>
+                $"{medals[index]} **{entry.DisplayName}** — " +
+                $"**Spins:** {entry.TotalSpins.ToString("N0", CultureInfo.InvariantCulture)} | " +
+                $"**Time:** {FormatDuration(entry.Duration)} | " +
+                $"**Organs Sold:** {entry.OrgansSold.ToString("N0", CultureInfo.InvariantCulture)}"));
+    }
 
     private MessageComponent BuildVictoryView(
         ulong guildId,
@@ -1786,16 +1888,7 @@ internal sealed class SlotGame : IDisposable
         string displayName,
         PlayerData player)
     {
-        string[] medals = ["🥇", "🥈", "🥉"];
-        IReadOnlyList<SlotLeaderboardEntry> leaders =
-            _leaderboard.GetTopThree(guildId);
-        string leaderboard = leaders.Count == 0
-            ? "No completed runs yet."
-            : string.Join(
-                "\n",
-                leaders.Select((entry, index) =>
-                    $"{medals[index]} **{entry.DisplayName}** — " +
-                    FormatDuration(entry.Duration)));
+        string leaderboard = BuildLeaderboardText(guildId);
 
         return "# 🏆 Congratulations! 🏆\n" +
             $"**{displayName}, you are now a trillionaire!**\n\n" +
@@ -1804,7 +1897,7 @@ internal sealed class SlotGame : IDisposable
             $"**Time Taken:** {FormatDuration(player.RunDuration)}\n" +
             $"**Total Spins:** {player.TotalSpins.ToString("N0", CultureInfo.InvariantCulture)}\n" +
             $"**Organs Sold:** {player.OrgansSold.ToString("N0", CultureInfo.InvariantCulture)}\n\n" +
-            "## Server Fastest Times\n" +
+            "## Server Leaderboard\n" +
             leaderboard;
     }
 

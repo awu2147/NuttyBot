@@ -43,7 +43,8 @@ internal sealed class SlotLeaderboard
     public IReadOnlyList<SlotLeaderboardEntry> GetTopThree(ulong guildId) =>
         _entries
             .Where(entry => entry.GuildId == guildId)
-            .OrderBy(entry => entry.DurationTicks)
+            .OrderBy(entry => entry.TotalSpins)
+            .ThenBy(entry => entry.OrgansSold)
             .ThenBy(entry => entry.CompletedUtc)
             .Take(3)
             .ToArray();
@@ -60,11 +61,17 @@ internal sealed class SlotLeaderboard
         SlotLeaderboardEntry? existing = _entries.FirstOrDefault(entry =>
             entry.GuildId == guildId && entry.UserId == userId);
 
-        if (existing is not null && existing.DurationTicks <= duration.Ticks)
-            return;
-
         if (existing is not null)
+        {
+            bool newRecordIsBetter =
+                totalSpins < existing.TotalSpins ||
+                (totalSpins == existing.TotalSpins && organsSold < existing.OrgansSold);
+
+            if (!newRecordIsBetter)
+                return;
+
             _entries.Remove(existing);
+        }
 
         _entries.Add(new SlotLeaderboardEntry(
             guildId,

@@ -1,4 +1,4 @@
-﻿using Discord;
+using Discord;
 using Discord.WebSocket;
 using NuttyBot;
 using System.Collections;
@@ -149,6 +149,8 @@ namespace NuttyBot
 
                 var slotCommand = SlotGame.CreateCommand();
                 var slotSpeedCommand = SlotGame.CreateSpeedCommand();
+                var slotLeaderboardCommand = SlotGame.CreateLeaderboardCommand();
+                var slotPayoutsCommand = SlotGame.CreatePayoutsCommand();
 
                 if (!existingCommands.Any(x => x.Name == "addemoji"))
                 {
@@ -163,6 +165,16 @@ namespace NuttyBot
                 if (!existingCommands.Any(x => x.Name == "slotsspeed"))
                 {
                     await guild.CreateApplicationCommandAsync(slotSpeedCommand.Build());
+                }
+
+                if (!existingCommands.Any(x => x.Name == "slotsleaderboard"))
+                {
+                    await guild.CreateApplicationCommandAsync(slotLeaderboardCommand.Build());
+                }
+
+                if (!existingCommands.Any(x => x.Name == "slotspayouts"))
+                {
+                    await guild.CreateApplicationCommandAsync(slotPayoutsCommand.Build());
                 }
 
                 var oldSlotCommand = existingCommands.FirstOrDefault(x => x.Name == "rollslots");
@@ -197,6 +209,14 @@ namespace NuttyBot
 
                 case "slotsspeed":
                     await Slots.HandleSpeedSlashCommandAsync(command);
+                    break;
+
+                case "slotsleaderboard":
+                    await Slots.HandleLeaderboardSlashCommandAsync(command);
+                    break;
+
+                case "slotspayouts":
+                    await Slots.HandlePayoutsSlashCommandAsync(command);
                     break;
             }
         }
