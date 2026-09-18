@@ -42,11 +42,14 @@ internal sealed class SlotLeaderboard
         }
     }
 
-    public IReadOnlyList<SlotLeaderboardEntry> GetTopThree(ulong guildId)
+    public IReadOnlyList<SlotLeaderboardEntry> GetTopEntries(ulong guildId, int maxEntries)
     {
+        if (maxEntries <= 0)
+            return Array.Empty<SlotLeaderboardEntry>();
+
         lock (_syncRoot)
         {
-            var top = new SlotLeaderboardEntry?[3];
+            var top = new SlotLeaderboardEntry?[maxEntries];
 
             for (int i = 0; i < _entries.Count; i++)
             {

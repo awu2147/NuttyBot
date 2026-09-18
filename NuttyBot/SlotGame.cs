@@ -1923,7 +1923,7 @@ internal sealed class SlotGame : IDisposable
 
     private MessageComponent BuildLeaderboardView(ulong guildId)
     {
-        string leaderboard = BuildLeaderboardText(guildId);
+        string leaderboard = BuildLeaderboardText(guildId, 10);
 
         return new ComponentBuilderV2()
             .WithContainer(container => container
@@ -1973,25 +1973,32 @@ internal sealed class SlotGame : IDisposable
             .Build();
     }
 
-    private string BuildLeaderboardText(ulong guildId)
+    private string BuildLeaderboardText(ulong guildId, int maxEntries)
     {
         string[] medals = ["🥇", "🥈", "🥉"];
         IReadOnlyList<SlotLeaderboardEntry> leaders =
-            _leaderboard.GetTopThree(guildId);
+            _leaderboard.GetTopEntries(guildId, maxEntries);
 
         if (leaders.Count == 0)
             return "No completed runs yet.";
 
-        var builder = new StringBuilder(256);
+        var builder = new StringBuilder(maxEntries <= 3 ? 256 : 768);
 
         for (int i = 0; i < leaders.Count; i++)
         {
             if (i > 0)
                 builder.Append('\n');
 
+            string rankEmoji = i < medals.Length
+                ? medals[i]
+                : "🎰";
+
+            builder.Append(rankEmoji);
+            builder.Append(' ');
+            builder.Append(i + 1);
+            builder.Append(". **");
+
             SlotLeaderboardEntry entry = leaders[i];
-            builder.Append(medals[i]);
-            builder.Append(" **");
             builder.Append(entry.DisplayName);
             builder.Append("** — **Spins:** ");
             builder.Append(entry.TotalSpins.ToString("N0", CultureInfo.InvariantCulture));
@@ -2047,7 +2054,7 @@ internal sealed class SlotGame : IDisposable
         string displayName,
         PlayerData player)
     {
-        string leaderboard = BuildLeaderboardText(guildId);
+        string leaderboard = BuildLeaderboardText(guildId, 3);
 
         return "# 🏆 Congratulations! 🏆\n" +
             $"**{displayName}, you are now a trillionaire!**\n\n" +
