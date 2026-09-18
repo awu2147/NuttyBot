@@ -6,20 +6,20 @@ namespace NuttyBot;
 
 internal sealed class SlotGame : IDisposable
 {
-    private const string ReelRowPrefix = "# ";
     private const int MachinesPerBatch = 5;
     private const int AdditionalLineBonusPercent = 25;
+    private const int ResultMessageMinimumLength = 80;
     private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromSeconds(5);
     // Replace any 0 below with a custom emoji ID from the Discord server.
     // If that emoji cannot be found in the current server, the fruit is used instead.
     private static readonly SlotSymbol[] SymbolDefinitions =
     [
-        new(":cherries:", 1471654909085483009, 8), // Cherry
-        new(":lemon:", 1549875953914740846, 10), // Lemon
-        new(":tangerine:", 1549882503072977027, 12), // Orange
-        new(":grapes:", 698499914593861712, 15), // Grapes
-        new(":star:", 1550281140815003708, 20)  // Star
+        new("🍒", 1471654909085483009, 8), // Cherry
+        new("🍋", 1549875953914740846, 10), // Lemon
+        new("🍊", 1549882503072977027, 12), // Orange
+        new("🍇", 698499914593861712, 15), // Grapes
+        new("⭐", 1550281140815003708, 20)  // Star
     ];
     private static readonly MachineBatch[] MachineBatches =
     [
@@ -155,6 +155,11 @@ internal sealed class SlotGame : IDisposable
             case "lobbysell":
                 await HandleLobbySellOrganAsync(component, parts);
                 break;
+
+            case "reel":
+            case "lever":
+                await component.DeferAsync();
+                break;
         }
     }
 
@@ -214,13 +219,17 @@ internal sealed class SlotGame : IDisposable
                 claimedMachine.Message = component.Message;
                 claimedMachine.Player = player;
                 IReadOnlyList<string> symbols = ResolveSymbols(component);
-                claimedMachine.LastMachineDisplay = BuildIdleMachineDisplay(symbols);
+                string[,] idleReels = BuildIdleReels(symbols);
+                var idleWinningCells = new bool[3, 3];
+                claimedMachine.LastReels = idleReels;
+                claimedMachine.LastWinningCells = idleWinningCells;
                 claimedMachine.LastResult = "Choose a bet when you're ready.";
                 view = BuildMachineView(
                     claimedMachine,
                     player,
                     symbols,
-                    claimedMachine.LastMachineDisplay,
+                    idleReels,
+                    idleWinningCells,
                     claimedMachine.LastResult);
             }
         }
@@ -273,7 +282,8 @@ internal sealed class SlotGame : IDisposable
                     machine,
                     player,
                     symbols,
-                    machine.LastMachineDisplay ?? BuildIdleMachineDisplay(symbols),
+                    machine.LastReels ?? BuildIdleReels(symbols),
+                    machine.LastWinningCells ?? new bool[3, 3],
                     machine.LastResult);
             }
         }
@@ -404,7 +414,8 @@ internal sealed class SlotGame : IDisposable
                         machine,
                         player,
                         symbols,
-                        spin.MachineDisplay,
+                        spin.Reels,
+                        spin.WinningCells,
                         spin.Result);
                 }
             }
@@ -864,7 +875,7 @@ internal sealed class SlotGame : IDisposable
         }
 
         container
-            .WithTextDisplay($"**{statusName} Room ({FormatMoney(batch.RequiredBalance)}+)**")
+            .WithTextDisplay($"**{statusName} Room [{FormatMoney(batch.RequiredBalance)}+]**")
             .WithActionRow(batchButtons);
 
         return new ComponentBuilderV2()
@@ -876,7 +887,8 @@ internal sealed class SlotGame : IDisposable
         SlotMachine machine,
         PlayerData player,
         IReadOnlyList<string> symbols,
-        string? machineDisplay,
+        string[,] reels,
+        bool[,] winningCells,
         string? result)
     {
         var navigationButtons = new ActionRowBuilder()
@@ -913,43 +925,105 @@ internal sealed class SlotGame : IDisposable
                 ButtonStyle.Danger,
                 disabled: player.Balance <= 0);
 
-        string display = string.Empty;
-
         string linePayouts = string.Join(
             " • ",
             SymbolDefinitions.Select((symbol, index) =>
                 $"{symbols[index]} ×{symbol.LineMultiplier}"));
 
-        display +=
+        string machineInformation =
             $"**Line Payouts:** {linePayouts}\n" +
             $"**Multi-Line Bonus:** +{AdditionalLineBonusPercent}% per extra line\n" +
-            $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins\n";
+            $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins";
 
-        if (machineDisplay is not null)
-            display += $"{machineDisplay}\n\u2800\n";
+        var container = new ContainerBuilder()
+            .WithAccentColor(machine.Batch.AccentColor)
+            .WithTextDisplay(
+                $"**Player:** {machine.OwnerDisplayName ?? "Unknown player"} • " +
+                $"**Organs Sold:** {player.OrgansSold}\n" +
+                $"**Balance:** {FormatMoney(player.Balance)}")
+            .WithActionRow(navigationButtons)
+            .WithTextDisplay($"## 🎰 Slot Machine {machine.Number} 🎰\n\n")
+            .WithTextDisplay(machineInformation)
+            .WithActionRow(BuildReelRow(machine, reels, winningCells, row: 0))
+            .WithActionRow(BuildReelRow(
+                machine,
+                reels,
+                winningCells,
+                row: 1,
+                includeLever: true))
+            .WithActionRow(BuildReelRow(machine, reels, winningCells, row: 2));
 
         if (result is not null)
-            display += $"{result}\n\n";
+            container.WithTextDisplay(PadResultMessage(result));
+
+        container
+            .WithTextDisplay(
+                $"**Balance:** {FormatMoney(player.Balance)} • **Next Spin Bet:**")
+            .WithActionRow(betButtons);
 
         return new ComponentBuilderV2()
-            .WithContainer(container => container
-                .WithAccentColor(machine.Batch.AccentColor)
-                .WithTextDisplay(
-                    $"**Player:** {machine.OwnerDisplayName ?? "Unknown player"} • " +
-                    $"**Organs Sold:** {player.OrgansSold}\n" +
-                    $"**Balance:** {FormatMoney(player.Balance)}")
-                .WithActionRow(navigationButtons)
-                .WithTextDisplay($"## 🎰 Slot Machine {machine.Number} 🎰\n\n")
-                .WithTextDisplay(display)
-                .WithTextDisplay($"**Balance:** {FormatMoney(player.Balance)} • **Next Spin Bet:**")
-                .WithActionRow(betButtons))
+            .WithContainer(container)
             .Build();
     }
 
-    private static string BuildIdleMachineDisplay(IReadOnlyList<string> symbols) =>
-        $"{ReelRowPrefix}~~ {symbols[0]}  {symbols[1]}  {symbols[2]} ~~\n" +
-        $"{ReelRowPrefix}~~ {symbols[4]}  {symbols[3]}  {symbols[0]}  🕹️~~\n" +
-        $"{ReelRowPrefix}~~ {symbols[2]}  {symbols[4]}  {symbols[1]} ~~\n";
+    private static ActionRowBuilder BuildReelRow(
+        SlotMachine machine,
+        string[,] reels,
+        bool[,] winningCells,
+        int row,
+        bool includeLever = false)
+    {
+        var reelRow = new ActionRowBuilder();
+
+        for (int column = 0; column < 3; column++)
+        {
+            reelRow.WithButton(
+                new ButtonBuilder()
+                    .WithCustomId(
+                        $"slots:reel:{machine.Id}:{machine.SessionId}:{row}:{column}")
+                    .WithStyle(
+                        winningCells[row, column]
+                            ? ButtonStyle.Success
+                            : ButtonStyle.Secondary)
+                    .WithEmote(ParseReelEmote(reels[row, column])));
+        }
+
+        if (includeLever)
+        {
+            reelRow.WithButton(
+                new ButtonBuilder()
+                    .WithCustomId(
+                        $"slots:lever:{machine.Id}:{machine.SessionId}")
+                    .WithStyle(ButtonStyle.Secondary)
+                    .WithEmote(new Emoji("🕹️")));
+        }
+
+        return reelRow;
+    }
+
+    private static IEmote ParseReelEmote(string symbol) =>
+        symbol.StartsWith('<')
+            ? Emote.Parse(symbol)
+            : new Emoji(symbol);
+
+    private static string PadResultMessage(string message)
+    {
+        int paddingLength = ResultMessageMinimumLength - message.Length;
+
+        if (paddingLength <= 0)
+            return message;
+
+        return message + string.Concat(
+            Enumerable.Repeat("\u200B\u2800", paddingLength));
+    }
+
+    private static string[,] BuildIdleReels(IReadOnlyList<string> symbols) =>
+        new[,]
+        {
+            { symbols[0], symbols[1], symbols[2] },
+            { symbols[4], symbols[3], symbols[0] },
+            { symbols[2], symbols[4], symbols[1] }
+        };
 
     private static IReadOnlyList<string> ResolveSymbols(
         SocketMessageComponent component)
@@ -1099,7 +1173,8 @@ internal sealed class SlotGame : IDisposable
         machine.LastInteractionUtc = default;
         machine.Message = null;
         machine.Player = null;
-        machine.LastMachineDisplay = null;
+        machine.LastReels = null;
+        machine.LastWinningCells = null;
         machine.LastResult = null;
     }
 
@@ -1155,6 +1230,7 @@ internal sealed class SlotGame : IDisposable
         }
 
         var winningLines = new List<WinningLine>();
+        var winningCells = new bool[3, 3];
 
         void CheckLine(
             int row1, int column1,
@@ -1185,6 +1261,9 @@ internal sealed class SlotGame : IDisposable
                 winningLines.Add(new WinningLine(
                     symbol,
                     SymbolDefinitions[symbolIndex].LineMultiplier));
+                winningCells[row1, column1] = true;
+                winningCells[row2, column2] = true;
+                winningCells[row3, column3] = true;
             }
         }
 
@@ -1217,11 +1296,6 @@ internal sealed class SlotGame : IDisposable
             player.Credit(payout);
         }
 
-        string machineDisplay =
-            $"{ReelRowPrefix}~~ {slots[0, 0]}  {slots[0, 1]}  {slots[0, 2]} ~~\n" +
-            $"{ReelRowPrefix}~~ {slots[1, 0]}  {slots[1, 1]}  {slots[1, 2]}  🕹️~~\n" +
-            $"{ReelRowPrefix}~~ {slots[2, 0]}  {slots[2, 1]}  {slots[2, 2]} ~~\n";
-
         string result = winner
             ? $"🎉 **{winningLines.Count} winning " +
               $"{(winningLines.Count == 1 ? "line" : "lines")}! " +
@@ -1229,10 +1303,11 @@ internal sealed class SlotGame : IDisposable
               $"You won {FormatMoney(payout)}!** 🎉"
             : "Better luck next time!";
 
-        machine.LastMachineDisplay = machineDisplay;
+        machine.LastReels = slots;
+        machine.LastWinningCells = winningCells;
         machine.LastResult = result;
 
-        return new SpinResult(machineDisplay, result);
+        return new SpinResult(slots, winningCells, result);
     }
 
     private void ExpireSessions()
@@ -1290,7 +1365,10 @@ internal sealed class SlotGame : IDisposable
         }
     }
 
-    private sealed record SpinResult(string MachineDisplay, string Result);
+    private sealed record SpinResult(
+        string[,] Reels,
+        bool[,] WinningCells,
+        string Result);
 
     private sealed record WinningLine(string Symbol, int Multiplier);
 
@@ -1334,7 +1412,8 @@ internal sealed class SlotGame : IDisposable
         public DateTimeOffset LastInteractionUtc { get; set; }
         public IUserMessage? Message { get; set; }
         public PlayerData? Player { get; set; }
-        public string? LastMachineDisplay { get; set; }
+        public string[,]? LastReels { get; set; }
+        public bool[,]? LastWinningCells { get; set; }
         public string? LastResult { get; set; }
         public int TotalRolls { get; set; }
         public int TotalWins { get; set; }
