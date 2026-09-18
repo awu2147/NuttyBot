@@ -1572,6 +1572,10 @@ internal sealed class SlotGame : IDisposable
             $"**Multi-Line Bonus:** +{AdditionalLineBonusPercent}% per extra line\n" +
             $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins";
 
+        string machineTitle = machine.IsSpeedMode
+            ? "Slot Machine"
+            : $"Slot Machine {machine.Number}";
+
         var container = new ContainerBuilder()
             .WithAccentColor(machine.Batch.AccentColor)
             .WithTextDisplay(
@@ -1579,7 +1583,7 @@ internal sealed class SlotGame : IDisposable
                 $"**Organs Sold:** {player.OrgansSold}\n" +
                 $"**Balance:** {FormatMoney(player.Balance)}")
             .WithActionRow(navigationButtons)
-            .WithTextDisplay($"## 🎰 Slot Machine {machine.Number} 🎰\n\n")
+            .WithTextDisplay($"## 🎰 {machineTitle} 🎰\n\n")
             .WithTextDisplay(machineInformation)
             .WithActionRow(BuildReelRow(machine, reels, winningCells, row: 0))
             .WithActionRow(BuildReelRow(
