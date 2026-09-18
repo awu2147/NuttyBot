@@ -97,7 +97,7 @@ internal sealed class SlotGame : IDisposable
             return;
         }
 
-        string lobbyId;
+        string lobbyId = string.Empty;
         MessageComponent view;
         ulong guildId = command.GuildId.Value;
         ulong userId = command.User.Id;
@@ -110,13 +110,24 @@ internal sealed class SlotGame : IDisposable
             ExpireSessions();
             ReleaseUserMachine(guildId, userId);
             PlayerData player = GetPlayer(guildId, userId);
-            lobbyId = CreateLobby(guildId, userId, displayName, player);
-            view = BuildLobbyView(guildId, userId, lobbyId, batchIndex: 0);
+
+            if (player.TryCompleteRun(DateTimeOffset.UtcNow))
+            {
+                view = BuildVictoryView(displayName, player);
+            }
+            else
+            {
+                lobbyId = CreateLobby(guildId, userId, displayName, player);
+                view = BuildLobbyView(guildId, userId, lobbyId, batchIndex: 0);
+            }
         }
 
         await command.RespondAsync(
             components: view,
             flags: MessageFlags.ComponentsV2);
+
+        if (lobbyId.Length == 0)
+            return;
 
         try
         {
@@ -305,19 +316,30 @@ internal sealed class SlotGame : IDisposable
                 player.SellOrgan();
                 machine.LastInteractionUtc = DateTimeOffset.UtcNow;
                 machine.Message = component.Message;
-                machine.LastResult =
-                    $"🫀 Sold an organ for {FormatMoney(PlayerData.OrganSaleValue)}.";
 
-                IReadOnlyList<ResolvedSlotSymbol> symbols = ResolveSymbols(
-                    component,
-                    machine.Batch);
-                view = BuildMachineView(
-                    machine,
-                    player,
-                    symbols,
-                    machine.LastReels ?? BuildIdleReels(symbols),
-                    machine.LastWinningCells ?? new bool[3, 3],
-                    machine.LastResult);
+                if (player.TryCompleteRun(DateTimeOffset.UtcNow))
+                {
+                    view = BuildVictoryView(
+                        machine.OwnerDisplayName ?? component.User.Username,
+                        player);
+                    ReleaseMachine(machine);
+                }
+                else
+                {
+                    machine.LastResult =
+                        $"🫀 Sold an organ for {FormatMoney(PlayerData.OrganSaleValue)}.";
+
+                    IReadOnlyList<ResolvedSlotSymbol> symbols = ResolveSymbols(
+                        component,
+                        machine.Batch);
+                    view = BuildMachineView(
+                        machine,
+                        player,
+                        symbols,
+                        machine.LastReels ?? BuildIdleReels(symbols),
+                        machine.LastWinningCells ?? new bool[3, 3],
+                        machine.LastResult);
+                }
             }
         }
 
@@ -355,7 +377,11 @@ internal sealed class SlotGame : IDisposable
         lock (_syncRoot)
         {
             ExpireSessions();
-            invalidLobby = !IsCurrentLobby(guildId, component.User.Id, lobbyId);
+            invalidLobby = !TryGetCurrentLobby(
+                guildId,
+                component.User.Id,
+                lobbyId,
+                out LobbySession? lobby);
 
             if (!invalidLobby)
             {
@@ -364,12 +390,22 @@ internal sealed class SlotGame : IDisposable
                     component.User.Id,
                     lobbyId,
                     component.Message);
-                GetPlayer(guildId, component.User.Id).SellOrgan();
-                view = BuildLobbyView(
-                    guildId,
-                    component.User.Id,
-                    lobbyId,
-                    batchIndex);
+                PlayerData player = GetPlayer(guildId, component.User.Id);
+                player.SellOrgan();
+
+                if (player.TryCompleteRun(DateTimeOffset.UtcNow))
+                {
+                    CloseLobby(guildId, component.User.Id);
+                    view = BuildVictoryView(lobby!.DisplayName, player);
+                }
+                else
+                {
+                    view = BuildLobbyView(
+                        guildId,
+                        component.User.Id,
+                        lobbyId,
+                        batchIndex);
+                }
             }
         }
 
@@ -445,13 +481,24 @@ internal sealed class SlotGame : IDisposable
                         player,
                         betAmount,
                         symbols);
-                    view = BuildMachineView(
-                        machine,
-                        player,
-                        symbols,
-                        spin.Reels,
-                        spin.WinningCells,
-                        spin.Result);
+
+                    if (player.TryCompleteRun(DateTimeOffset.UtcNow))
+                    {
+                        view = BuildVictoryView(
+                            machine.OwnerDisplayName ?? component.User.Username,
+                            player);
+                        ReleaseMachine(machine);
+                    }
+                    else
+                    {
+                        view = BuildMachineView(
+                            machine,
+                            player,
+                            symbols,
+                            spin.Reels,
+                            spin.WinningCells,
+                            spin.Result);
+                    }
                 }
             }
         }
@@ -1128,6 +1175,33 @@ internal sealed class SlotGame : IDisposable
                     $"{displayName} has left the casino with a balance of {FormatMoney(balance)}."))
             .Build();
 
+    private static MessageComponent BuildVictoryView(
+        string displayName,
+        PlayerData player) =>
+        new ComponentBuilderV2()
+            .WithContainer(container => container
+                .WithAccentColor(new Color(241, 196, 15))
+                .WithTextDisplay(
+                    "# 🏆 Congratulations! 🏆\n" +
+                    $"**{displayName}, you are now a trillionaire!**\n\n" +
+                    $"**Final Balance:** {FormatMoney(player.Balance)}\n" +
+                    "## Run Statistics\n" +
+                    $"**Time Taken:** {FormatDuration(player.RunDuration)}\n" +
+                    $"**Total Spins:** {player.TotalSpins.ToString("N0", CultureInfo.InvariantCulture)}\n" +
+                    $"**Organs Sold:** {player.OrgansSold.ToString("N0", CultureInfo.InvariantCulture)}"))
+            .Build();
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalDays >= 1)
+        {
+            return $"{(int)duration.TotalDays}d " +
+                $"{duration.Hours:D2}h {duration.Minutes:D2}m {duration.Seconds:D2}s";
+        }
+
+        return $"{duration.Hours:D2}h {duration.Minutes:D2}m {duration.Seconds:D2}s";
+    }
+
     private PlayerData GetPlayer(ulong guildId, ulong userId)
     {
         var key = (guildId, userId);
@@ -1270,6 +1344,9 @@ internal sealed class SlotGame : IDisposable
         if (!player.TrySpend(betAmount))
             throw new InvalidOperationException("The player cannot afford this spin.");
 
+        DateTimeOffset spinTime = DateTimeOffset.UtcNow;
+        player.RecordSpin(spinTime);
+
         var slots = new ResolvedSlotSymbol[3, 3];
 
         for (int row = 0; row < 3; row++)
@@ -1315,7 +1392,7 @@ internal sealed class SlotGame : IDisposable
 
         machine.TotalRolls++;
         machine.TotalWins += winner ? 1 : 0;
-        machine.LastInteractionUtc = DateTimeOffset.UtcNow;
+        machine.LastInteractionUtc = spinTime;
 
         long payout = 0;
         decimal effectiveMultiplier = 0;
@@ -1400,23 +1477,23 @@ internal sealed class SlotGame : IDisposable
         }
     }
 
-    private sealed record SpinResult(
+    internal sealed record SpinResult(
         ResolvedSlotSymbol[,] Reels,
         bool[,] WinningCells,
         string Result);
 
-    private sealed record WinningLine(string Symbol, int Multiplier);
+    internal sealed record WinningLine(string Symbol, int Multiplier);
 
-    private sealed record SlotSymbol(
+    internal sealed record SlotSymbol(
         string FallbackEmoji,
         ulong CustomEmojiId,
         int LineMultiplier);
 
-    private sealed record ResolvedSlotSymbol(
+    internal sealed record ResolvedSlotSymbol(
         string DisplayEmoji,
         int LineMultiplier);
 
-    private sealed class LobbySession(
+    internal sealed class LobbySession(
         string id,
         string displayName,
         PlayerData player,
@@ -1429,7 +1506,7 @@ internal sealed class SlotGame : IDisposable
         public DateTimeOffset LastInteractionUtc { get; set; } = DateTimeOffset.UtcNow;
     }
 
-    private sealed record MachineBatch(
+    internal sealed record MachineBatch(
         int Index,
         long RequiredBalance,
         long[] BetAmounts,
@@ -1437,7 +1514,7 @@ internal sealed class SlotGame : IDisposable
         string ColorEmoji,
         Color AccentColor);
 
-    private sealed class SlotMachine(
+    internal sealed class SlotMachine(
         int id,
         int number,
         MachineBatch batch)
