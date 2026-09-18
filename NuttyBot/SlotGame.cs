@@ -205,6 +205,10 @@ internal sealed class SlotGame : IDisposable
                 await HandleLobbyResetRunAsync(component, parts);
                 break;
 
+            case "nextroom":
+                await HandleNextRoomAsync(component, parts);
+                break;
+
             case "playagain":
                 await HandlePlayAgainAsync(component, parts);
                 break;
@@ -218,6 +222,122 @@ internal sealed class SlotGame : IDisposable
                 await component.DeferAsync();
                 break;
         }
+    }
+
+    private async Task HandleNextRoomAsync(
+        SocketMessageComponent component,
+        string[] parts)
+    {
+        if (!TryParseMachineSession(parts, out int machineId, out string sessionId))
+            return;
+
+        ulong guildId = component.GuildId!.Value;
+        ulong userId = component.User.Id;
+        MessageComponent? view = null;
+        bool invalidSession;
+        bool nextRoomLocked = false;
+        long requiredBalance = 0;
+        long currentBalance = 0;
+
+        lock (_syncRoot)
+        {
+            ExpireSessions();
+            SlotMachine? machine = FindOwnedMachine(
+                guildId,
+                userId,
+                machineId,
+                sessionId);
+
+            invalidSession = machine is null;
+
+            if (machine is not null)
+            {
+                PlayerData player = GetPlayer(guildId, userId);
+                MachineBatch? nextBatch = GetBatch(machine.Batch.Index + 1);
+
+                if (nextBatch is null || player.Balance < nextBatch.RequiredBalance)
+                {
+                    nextRoomLocked = true;
+                    requiredBalance = nextBatch?.RequiredBalance ?? 0;
+                    currentBalance = player.Balance;
+                    machine.LastInteractionUtc = DateTimeOffset.UtcNow;
+                    machine.Message = component.Message;
+                }
+                else
+                {
+                    string displayName =
+                        machine.OwnerDisplayName ?? component.User.Username;
+                    SlotMachine? availableMachine = GetMachines(guildId)
+                        .FirstOrDefault(candidate =>
+                            candidate.Batch.Index == nextBatch.Index &&
+                            !candidate.IsClaimed);
+                    ReleaseMachine(machine);
+
+                    if (availableMachine is not null &&
+                        TryClaimMachine(
+                            guildId,
+                            userId,
+                            displayName,
+                            player,
+                            availableMachine.Id,
+                            out SlotMachine? claimedMachine))
+                    {
+                        SlotMachine nextMachine = claimedMachine!;
+                        nextMachine.Message = component.Message;
+                        nextMachine.Player = player;
+
+                        IReadOnlyList<ResolvedSlotSymbol> symbols = ResolveSymbols(
+                            component,
+                            nextMachine.Batch);
+                        ResolvedSlotSymbol[,] idleReels = BuildIdleReels(symbols);
+                        var idleWinningCells = new bool[3, 3];
+
+                        nextMachine.LastReels = idleReels;
+                        nextMachine.LastWinningCells = idleWinningCells;
+                        nextMachine.LastResult = "Choose a bet when you're ready.";
+                        view = BuildMachineView(
+                            nextMachine,
+                            player,
+                            symbols,
+                            idleReels,
+                            idleWinningCells,
+                            nextMachine.LastResult);
+                    }
+                    else
+                    {
+                        string lobbyId = CreateLobby(
+                            guildId,
+                            userId,
+                            displayName,
+                            player,
+                            component.Message);
+                        view = BuildLobbyView(
+                            guildId,
+                            userId,
+                            lobbyId,
+                            nextBatch.Index);
+                    }
+                }
+            }
+        }
+
+        if (invalidSession)
+        {
+            await RespondSessionExpiredAsync(component);
+            return;
+        }
+
+        if (nextRoomLocked)
+        {
+            string message = requiredBalance > 0
+                ? $"You need {FormatMoney(requiredBalance)} to enter the next room. " +
+                  $"Your balance is {FormatMoney(currentBalance)}."
+                : "There is no higher room.";
+            await component.RespondAsync(message, ephemeral: true);
+            return;
+        }
+
+        await UpdateMessageAsync(component, view!);
     }
 
     private async Task HandleResetRunAsync(
@@ -1118,7 +1238,7 @@ internal sealed class SlotGame : IDisposable
                 ButtonStyle.Danger,
                 emote: new Emoji("🫀"))
             .WithButton(
-                "🧠🔫",
+                "💣",
                 $"slots:lobbyreset:{userId}:{lobbyId}",
                 ButtonStyle.Danger)
             .WithButton(
@@ -1229,7 +1349,7 @@ internal sealed class SlotGame : IDisposable
                 ButtonStyle.Danger,
                 emote: new Emoji("🫀"))
             .WithButton(
-                "🔫🧠",
+                "💣",
                 $"slots:reset:{machine.Id}:{machine.SessionId}",
                 ButtonStyle.Danger)
             .WithButton(
@@ -1249,11 +1369,26 @@ internal sealed class SlotGame : IDisposable
                 disabled: !player.CanAfford(betAmount));
         }
 
-        betButtons.WithButton(
+        MachineBatch? nextBatch = GetBatch(machine.Batch.Index + 1);
+        bool canEnterNextRoom = nextBatch is not null &&
+            player.Balance >= nextBatch.RequiredBalance;
+
+        if (canEnterNextRoom)
+        {
+            betButtons.WithButton(
+                "Next Room",
+                $"slots:nextroom:{machine.Id}:{machine.SessionId}",
+                ButtonStyle.Success,
+                emote: new Emoji("➡️"));
+        }
+        else
+        {
+            betButtons.WithButton(
                 "All In",
                 $"slots:roll:{machine.Id}:{machine.SessionId}:all",
                 ButtonStyle.Danger,
                 disabled: player.Balance <= 0);
+        }
 
         string linePayouts = string.Join(
             " • ",
