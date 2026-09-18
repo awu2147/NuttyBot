@@ -8,18 +8,18 @@ internal sealed class SlotGame : IDisposable
 {
     private const string ReelRowPrefix = "# ";
     private const int MachinesPerBatch = 5;
-    private const long WinMultiplier = 100;
+    private const int AdditionalLineBonusPercent = 25;
     private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromSeconds(5);
     // Replace any 0 below with a custom emoji ID from the Discord server.
     // If that emoji cannot be found in the current server, the fruit is used instead.
     private static readonly SlotSymbol[] SymbolDefinitions =
     [
-        new(":cherries:", 1471654909085483009), // Cherry
-        new(":lemon:", 1549875953914740846), // Lemon
-        new(":tangerine:", 1549882503072977027), // Orange
-        new(":grapes:", 698499914593861712), // Grapes
-        new(":star:", 1550281140815003708)  // Star
+        new(":cherries:", 1471654909085483009, 8), // Cherry
+        new(":lemon:", 1549875953914740846, 10), // Lemon
+        new(":tangerine:", 1549882503072977027, 12), // Orange
+        new(":grapes:", 698499914593861712, 15), // Grapes
+        new(":star:", 1550281140815003708, 20)  // Star
     ];
     private static readonly MachineBatch[] MachineBatches =
     [
@@ -209,6 +209,7 @@ internal sealed class SlotGame : IDisposable
                 view = BuildMachineView(
                     claimedMachine,
                     player,
+                    symbols,
                     machineDisplay: BuildIdleMachineDisplay(symbols),
                     result: "Choose a bet when you're ready.");
             }
@@ -278,14 +279,16 @@ internal sealed class SlotGame : IDisposable
                 else
                 {
                     machine.Message = component.Message;
+                    IReadOnlyList<string> symbols = ResolveSymbols(component);
                     SpinResult spin = Spin(
                         machine,
                         player,
                         betAmount,
-                        ResolveSymbols(component));
+                        symbols);
                     view = BuildMachineView(
                         machine,
                         player,
+                        symbols,
                         spin.MachineDisplay,
                         spin.Result);
                 }
@@ -753,6 +756,7 @@ internal sealed class SlotGame : IDisposable
     private static MessageComponent BuildMachineView(
         SlotMachine machine,
         PlayerData player,
+        IReadOnlyList<string> symbols,
         string? machineDisplay,
         string? result)
     {
@@ -787,8 +791,14 @@ internal sealed class SlotGame : IDisposable
 
         string display = string.Empty;
 
+        string linePayouts = string.Join(
+            " • ",
+            SymbolDefinitions.Select((symbol, index) =>
+                $"{symbols[index]} ×{symbol.LineMultiplier}"));
+
         display +=
-            $"**Win Multiplier:** ×{WinMultiplier}\n" +
+            $"**Line Payouts:** {linePayouts}\n" +
+            $"**Multi-Line Bonus:** +{AdditionalLineBonusPercent}% per extra line\n" +
             $"**Machine Stats:** {machine.TotalRolls} rolls • {machine.TotalWins} wins\n";
 
         if (machineDisplay is not null)
@@ -813,7 +823,7 @@ internal sealed class SlotGame : IDisposable
 
     private static string BuildIdleMachineDisplay(IReadOnlyList<string> symbols) =>
         $"{ReelRowPrefix}~~ {symbols[0]}  {symbols[1]}  {symbols[2]} ~~\n" +
-        $"{ReelRowPrefix}~~ {symbols[4]}  {symbols[3]}  {symbols[0]}  ⬅️~~\n" +
+        $"{ReelRowPrefix}~~ {symbols[4]}  {symbols[3]}  {symbols[0]}  🕹️~~\n" +
         $"{ReelRowPrefix}~~ {symbols[2]}  {symbols[4]}  {symbols[1]} ~~\n";
 
     private static IReadOnlyList<string> ResolveSymbols(
@@ -1017,31 +1027,79 @@ internal sealed class SlotGame : IDisposable
                 slots[row, column] = symbols[Random.Shared.Next(symbols.Count)];
         }
 
-        bool winner =
-            slots[1, 0] == slots[1, 1] &&
-            slots[1, 1] == slots[1, 2];
+        var winningLines = new List<WinningLine>();
 
-        //bool winner = true;
+        void CheckLine(
+            int row1, int column1,
+            int row2, int column2,
+            int row3, int column3)
+        {
+            string symbol = slots[row1, column1];
+
+            if (symbol != slots[row2, column2] ||
+                symbol != slots[row3, column3])
+            {
+                return;
+            }
+
+            int symbolIndex = -1;
+
+            for (int index = 0; index < symbols.Count; index++)
+            {
+                if (symbols[index] == symbol)
+                {
+                    symbolIndex = index;
+                    break;
+                }
+            }
+
+            if (symbolIndex >= 0)
+            {
+                winningLines.Add(new WinningLine(
+                    symbol,
+                    SymbolDefinitions[symbolIndex].LineMultiplier));
+            }
+        }
+
+        for (int row = 0; row < 3; row++)
+            CheckLine(row, 0, row, 1, row, 2);
+
+        for (int column = 0; column < 3; column++)
+            CheckLine(0, column, 1, column, 2, column);
+
+        CheckLine(0, 0, 1, 1, 2, 2);
+        CheckLine(0, 2, 1, 1, 2, 0);
+
+        bool winner = winningLines.Count > 0;
 
         machine.TotalRolls++;
         machine.TotalWins += winner ? 1 : 0;
         machine.LastInteractionUtc = DateTimeOffset.UtcNow;
 
         long payout = 0;
+        decimal effectiveMultiplier = 0;
 
         if (winner)
         {
-            payout = checked(betAmount * WinMultiplier);
+            int baseMultiplier = winningLines.Sum(line => line.Multiplier);
+            int bonusPercent = 100 +
+                ((winningLines.Count - 1) * AdditionalLineBonusPercent);
+
+            effectiveMultiplier = baseMultiplier * bonusPercent / 100m;
+            payout = checked((long)(betAmount * effectiveMultiplier));
             player.Credit(payout);
         }
 
         string machineDisplay =
             $"{ReelRowPrefix}~~ {slots[0, 0]}  {slots[0, 1]}  {slots[0, 2]} ~~\n" +
-            $"{ReelRowPrefix}~~ {slots[1, 0]}  {slots[1, 1]}  {slots[1, 2]}  ⬅️~~\n" +
+            $"{ReelRowPrefix}~~ {slots[1, 0]}  {slots[1, 1]}  {slots[1, 2]}  🕹️~~\n" +
             $"{ReelRowPrefix}~~ {slots[2, 0]}  {slots[2, 1]}  {slots[2, 2]} ~~\n";
 
         string result = winner
-            ? $"🎉 **JACKPOT! You won {FormatMoney(payout)}!** 🎉"
+            ? $"🎉 **{winningLines.Count} winning " +
+              $"{(winningLines.Count == 1 ? "line" : "lines")}! " +
+              $"×{effectiveMultiplier.ToString("0.##", CultureInfo.InvariantCulture)} — " +
+              $"You won {FormatMoney(payout)}!** 🎉"
             : "Better luck next time!";
 
         return new SpinResult(machineDisplay, result);
@@ -1104,7 +1162,12 @@ internal sealed class SlotGame : IDisposable
 
     private sealed record SpinResult(string MachineDisplay, string Result);
 
-    private sealed record SlotSymbol(string FallbackEmoji, ulong CustomEmojiId);
+    private sealed record WinningLine(string Symbol, int Multiplier);
+
+    private sealed record SlotSymbol(
+        string FallbackEmoji,
+        ulong CustomEmojiId,
+        int LineMultiplier);
 
     private sealed class LobbySession(
         string id,
