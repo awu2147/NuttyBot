@@ -63,6 +63,8 @@ internal sealed class SlotGame : IDisposable
     private readonly Dictionary<ulong, List<SlotMachine>> _machinesByGuild = [];
     private readonly Dictionary<(ulong GuildId, ulong UserId), LobbySession> _activeLobbies = [];
     private readonly Dictionary<(ulong GuildId, ulong UserId), PlayerData> _players = [];
+    private readonly SlotLeaderboard _leaderboard = SlotLeaderboard.Load(
+        Path.Combine(AppContext.BaseDirectory, "slot-leaderboard.json"));
     private Timer? _cleanupTimer;
 
     public static SlashCommandBuilder CreateCommand() => new SlashCommandBuilder().WithName("slots").WithDescription("Open the slot machine lobby");
@@ -112,9 +114,9 @@ internal sealed class SlotGame : IDisposable
             ReleaseUserMachine(guildId, userId);
             PlayerData player = GetPlayer(guildId, userId);
 
-            if (player.TryCompleteRun(DateTimeOffset.UtcNow))
+            if (TryCompleteRun(guildId, displayName, player))
             {
-                view = BuildVictoryView(displayName, player);
+                view = BuildVictoryView(guildId, displayName, player);
             }
             else
             {
@@ -543,7 +545,10 @@ internal sealed class SlotGame : IDisposable
                 string displayName = component.User is SocketGuildUser guildUser
                     ? guildUser.DisplayName
                     : component.User.Username;
-                sharedView = BuildSharedVictoryView(displayName, player);
+                sharedView = BuildSharedVictoryView(
+                    component.GuildId.Value,
+                    displayName,
+                    player);
             }
         }
 
@@ -677,10 +682,17 @@ internal sealed class SlotGame : IDisposable
                 machine.LastInteractionUtc = DateTimeOffset.UtcNow;
                 machine.Message = component.Message;
 
-                if (player.TryCompleteRun(DateTimeOffset.UtcNow))
+                string displayName =
+                    machine.OwnerDisplayName ?? component.User.Username;
+
+                if (TryCompleteRun(
+                        component.GuildId.Value,
+                        displayName,
+                        player))
                 {
                     view = BuildVictoryView(
-                        machine.OwnerDisplayName ?? component.User.Username,
+                        component.GuildId.Value,
+                        displayName,
                         player);
                     ReleaseMachine(machine);
                 }
@@ -753,10 +765,10 @@ internal sealed class SlotGame : IDisposable
                 PlayerData player = GetPlayer(guildId, component.User.Id);
                 player.SellOrgan();
 
-                if (player.TryCompleteRun(DateTimeOffset.UtcNow))
+                if (TryCompleteRun(guildId, lobby!.DisplayName, player))
                 {
                     CloseLobby(guildId, component.User.Id);
-                    view = BuildVictoryView(lobby!.DisplayName, player);
+                    view = BuildVictoryView(guildId, lobby.DisplayName, player);
                 }
                 else
                 {
@@ -842,10 +854,17 @@ internal sealed class SlotGame : IDisposable
                         betAmount,
                         symbols);
 
-                    if (player.TryCompleteRun(DateTimeOffset.UtcNow))
+                    string displayName =
+                        machine.OwnerDisplayName ?? component.User.Username;
+
+                    if (TryCompleteRun(
+                            component.GuildId.Value,
+                            displayName,
+                            player))
                     {
                         view = BuildVictoryView(
-                            machine.OwnerDisplayName ?? component.User.Username,
+                            component.GuildId.Value,
+                            displayName,
                             player);
                         ReleaseMachine(machine);
                     }
@@ -1557,7 +1576,8 @@ internal sealed class SlotGame : IDisposable
                     $"{displayName} has left the casino with a balance of {FormatMoney(balance)}."))
             .Build();
 
-    private static MessageComponent BuildVictoryView(
+    private MessageComponent BuildVictoryView(
+        ulong guildId,
         string displayName,
         PlayerData player)
     {
@@ -1575,7 +1595,7 @@ internal sealed class SlotGame : IDisposable
 
         var container = new ContainerBuilder()
             .WithAccentColor(new Color(241, 196, 15))
-            .WithTextDisplay(BuildVictoryText(displayName, player))
+            .WithTextDisplay(BuildVictoryText(guildId, displayName, player))
             .WithActionRow(actions);
 
         return new ComponentBuilderV2()
@@ -1583,35 +1603,79 @@ internal sealed class SlotGame : IDisposable
             .Build();
     }
 
-    private static MessageComponent BuildSharedVictoryView(
+    private MessageComponent BuildSharedVictoryView(
+        ulong guildId,
         string displayName,
         PlayerData player) =>
         new ComponentBuilderV2()
             .WithContainer(container => container
                 .WithAccentColor(new Color(241, 196, 15))
-                .WithTextDisplay(BuildVictoryText(displayName, player)))
+                .WithTextDisplay(BuildVictoryText(guildId, displayName, player)))
             .Build();
 
-    private static string BuildVictoryText(
+    private string BuildVictoryText(
+        ulong guildId,
         string displayName,
-        PlayerData player) =>
-        "# 🏆 Congratulations! 🏆\n" +
-        $"**{displayName}, you are now a trillionaire!**\n\n" +
-        $"**Final Balance:** {FormatMoney(player.Balance)}\n" +
-        "## Run Statistics\n" +
-        $"**Time Taken:** {FormatDuration(player.RunDuration)}\n" +
-        $"**Total Spins:** {player.TotalSpins.ToString("N0", CultureInfo.InvariantCulture)}\n" +
-        $"**Organs Sold:** {player.OrgansSold.ToString("N0", CultureInfo.InvariantCulture)}";
+        PlayerData player)
+    {
+        string[] medals = ["🥇", "🥈", "🥉"];
+        IReadOnlyList<SlotLeaderboardEntry> leaders =
+            _leaderboard.GetTopThree(guildId);
+        string leaderboard = leaders.Count == 0
+            ? "No completed runs yet."
+            : string.Join(
+                "\n",
+                leaders.Select((entry, index) =>
+                    $"{medals[index]} **{entry.DisplayName}** — " +
+                    FormatDuration(entry.Duration)));
+
+        return "# 🏆 Congratulations! 🏆\n" +
+            $"**{displayName}, you are now a trillionaire!**\n\n" +
+            $"**Final Balance:** {FormatMoney(player.Balance)}\n" +
+            "## Run Statistics\n" +
+            $"**Time Taken:** {FormatDuration(player.RunDuration)}\n" +
+            $"**Total Spins:** {player.TotalSpins.ToString("N0", CultureInfo.InvariantCulture)}\n" +
+            $"**Organs Sold:** {player.OrgansSold.ToString("N0", CultureInfo.InvariantCulture)}\n\n" +
+            "## Server Fastest Times\n" +
+            leaderboard;
+    }
+
+    private bool TryCompleteRun(
+        ulong guildId,
+        string displayName,
+        PlayerData player)
+    {
+        bool wasAlreadyComplete = player.HasCompletedRun;
+
+        if (!player.TryCompleteRun(DateTimeOffset.UtcNow))
+            return false;
+
+        if (!wasAlreadyComplete && player.CompletedUtc.HasValue)
+        {
+            _leaderboard.RecordPersonalBest(
+                guildId,
+                player.UserId,
+                displayName,
+                player.RunDuration,
+                player.CompletedUtc.Value,
+                player.TotalSpins,
+                player.OrgansSold);
+        }
+
+        return true;
+    }
 
     private static string FormatDuration(TimeSpan duration)
     {
         if (duration.TotalDays >= 1)
         {
             return $"{(int)duration.TotalDays}d " +
-                $"{duration.Hours:D2}h {duration.Minutes:D2}m {duration.Seconds:D2}s";
+                $"{duration.Hours:D2}h {duration.Minutes:D2}m " +
+                $"{duration.Seconds:D2}.{duration.Milliseconds:D3}s";
         }
 
-        return $"{duration.Hours:D2}h {duration.Minutes:D2}m {duration.Seconds:D2}s";
+        return $"{duration.Hours:D2}h {duration.Minutes:D2}m " +
+            $"{duration.Seconds:D2}.{duration.Milliseconds:D3}s";
     }
 
     private PlayerData GetPlayer(ulong guildId, ulong userId)
