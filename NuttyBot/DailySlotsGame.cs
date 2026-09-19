@@ -339,6 +339,7 @@ internal sealed class DailySlotsGame
         MessageComponent? view = null;
         bool invalidSession = false;
         bool notReady = false;
+        bool startedNow = false;
 
         lock (_syncRoot)
         {
@@ -355,6 +356,7 @@ internal sealed class DailySlotsGame
                 else
                 {
                     session.StartGame();
+                    startedNow = true;
                     view = BuildGameView(session);
                 }
             }
@@ -377,6 +379,52 @@ internal sealed class DailySlotsGame
         }
 
         await UpdateMessageAsync(component, view);
+
+        // Discord mobile can occasionally fail to paint one of the Unicode emotes
+        // when the gameplay component tree is first created. A second edit shortly
+        // afterwards forces the client to redraw the exact same room. Rebuild from
+        // the current session state so a very fast interaction is not intentionally
+        // overwritten with the original pre-interaction view. This refresh is only
+        // performed on the initial transition into the game, never on normal clicks.
+        if (startedNow)
+            await RefreshGameViewAfterStartAsync(component.Message, guildId, userId, sessionId);
+    }
+
+    private async Task RefreshGameViewAfterStartAsync(
+        IUserMessage message,
+        ulong guildId,
+        ulong userId,
+        string sessionId)
+    {
+        try
+        {
+            await Task.Delay(200);
+
+            MessageComponent? refreshedView = null;
+
+            lock (_syncRoot)
+            {
+                if (TryGetSession(guildId, userId, sessionId, out DailySlotsSession? session) &&
+                    session.Started)
+                {
+                    refreshedView = BuildGameView(session);
+                }
+            }
+
+            if (refreshedView is null)
+                return;
+
+            await message.ModifyAsync(properties =>
+            {
+                properties.Components = refreshedView;
+            });
+        }
+        catch
+        {
+            // This is only a best-effort mobile rendering workaround. The initial
+            // UpdateAsync already succeeded, so a failed redraw must not roll back
+            // or otherwise disturb the active game session.
+        }
     }
 
     private async Task HandleSpinAsync(

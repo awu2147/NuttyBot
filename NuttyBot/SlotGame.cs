@@ -53,6 +53,16 @@ internal sealed class SlotGame : IDisposable
                 [SlotSymbolKey.Custom12] = 1401901345438437537,
                 [SlotSymbolKey.Custom13] = 1405797511498563658,
                 [SlotSymbolKey.Custom14] = 1401048413532852314
+            },
+            // Dan
+            [215870536410988544] = new()
+            {
+                [SlotSymbolKey.Custom1] = 409447749591891969,
+                [SlotSymbolKey.Custom2] = 984529168068902993,
+                [SlotSymbolKey.Custom3] = 679417105644388395,
+                [SlotSymbolKey.Custom4] = 409450120543993856,
+                [SlotSymbolKey.Custom5] = 723324984247844937,
+                [SlotSymbolKey.Custom6] = 764207225920553002,
             }
 
             // Add another guild like this:
