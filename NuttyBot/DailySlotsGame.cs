@@ -48,7 +48,7 @@ internal sealed class DailySlotsGame
             100,
             2,
             DailyBuffTargetMode.Cell,
-            "Shift the selected row left by one. The leftmost symbol wraps to the right."),
+            "Shift the selected row left by one. The leftmost symbol wraps to the right. New solution matches are revealed."),
         new(
             "row-right",
             "Shift Row Right",
@@ -56,7 +56,7 @@ internal sealed class DailySlotsGame
             100,
             2,
             DailyBuffTargetMode.Cell,
-            "Shift the selected row right by one. The rightmost symbol wraps to the left."),
+            "Shift the selected row right by one. The rightmost symbol wraps to the left. New solution matches are revealed."),
         new(
             "column-up",
             "Shift Column Up",
@@ -64,7 +64,7 @@ internal sealed class DailySlotsGame
             100,
             2,
             DailyBuffTargetMode.Cell,
-            "Shift the selected column up by one. The top symbol wraps to the bottom."),
+            "Shift the selected column up by one. The top symbol wraps to the bottom. New solution matches are revealed."),
         new(
             "column-down",
             "Shift Column Down",
@@ -72,15 +72,15 @@ internal sealed class DailySlotsGame
             100,
             2,
             DailyBuffTargetMode.Cell,
-            "Shift the selected column down by one. The bottom symbol wraps to the top."),
+            "Shift the selected column down by one. The bottom symbol wraps to the top. New solution matches are revealed."),
         new(
             "reroll",
-            "Reroll Cell",
+            "Reroll Symbol",
             "🎲",
             150,
             3,
             DailyBuffTargetMode.Cell,
-            "Reroll one selected cell on the current board. This does not reveal solution cells."),
+            "Reroll one selected symbol and check against the solution."),
         new(
             "lucky-spin",
             "Lucky Spin",
@@ -88,15 +88,15 @@ internal sealed class DailySlotsGame
             300,
             2,
             DailyBuffTargetMode.None,
-            "Your next spin is guaranteed to reveal at least one new solution cell."),
+            "After the next normal spin resolves, reveal one additional unsolved solution symbol. Stacks with additional uses."),
         new(
             "wild",
-            "Wild Cell",
+            "Wildcard",
             "🃏",
             500,
             1,
             DailyBuffTargetMode.Cell,
-            "Turn one selected cell Wild. It solves that square and can complete a 5-in-a-row."),
+            "Instantly solves the selected position and turns the current symbol into a Wildcard. A Wildcard symbol can complete a 5-in-a-row."),
         new(
             "double-payout",
             "Double Payout",
@@ -548,9 +548,10 @@ internal sealed class DailySlotsGame
                 SpendBuff(session, buffState);
                 session.GuaranteedSolutionHitsNextSpin++;
                 session.StatusMessage =
-                    $"🍀 Lucky Spin used! Next spin is guaranteed to reveal at least " +
-                    $"{session.GuaranteedSolutionHitsNextSpin} solution " +
-                    $"{(session.GuaranteedSolutionHitsNextSpin == 1 ? "cell" : "cells")}.";
+                    $"🍀 Lucky Spin used! Next spin will reveal " +
+                    $"{session.GuaranteedSolutionHitsNextSpin} bonus solution " +
+                    $"{(session.GuaranteedSolutionHitsNextSpin == 1 ? "symbol" : "symbols")} " +
+                    "after the regular spin resolves.";
                 break;
 
             case "double-payout":
@@ -606,7 +607,7 @@ internal sealed class DailySlotsGame
 
         if (session.SlotSymbolIndexes[row, column] < 0 && buff.Id != "wild")
         {
-            session.StatusMessage = "That square does not contain a slot symbol yet.";
+            session.StatusMessage = "That cell does not contain a slot symbol yet.";
             return;
         }
 
@@ -617,27 +618,28 @@ internal sealed class DailySlotsGame
         {
             case "row-left":
                 ShiftRowLeft(session.SlotSymbolIndexes, row);
-                FinishBoardManipulation(session, buff, $"row {row + 1} shifted left");
+                FinishBoardManipulation(session, buff, $"row {row + 1} shifted left", checkSolution: true);
                 break;
 
             case "row-right":
                 ShiftRowRight(session.SlotSymbolIndexes, row);
-                FinishBoardManipulation(session, buff, $"row {row + 1} shifted right");
+                FinishBoardManipulation(session, buff, $"row {row + 1} shifted right", checkSolution: true);
                 break;
 
             case "column-up":
                 ShiftColumnUp(session.SlotSymbolIndexes, column);
-                FinishBoardManipulation(session, buff, $"column {column + 1} shifted up");
+                FinishBoardManipulation(session, buff, $"column {column + 1} shifted up", checkSolution: true);
                 break;
 
             case "column-down":
                 ShiftColumnDown(session.SlotSymbolIndexes, column);
-                FinishBoardManipulation(session, buff, $"column {column + 1} shifted down");
+                FinishBoardManipulation(session, buff, $"column {column + 1} shifted down", checkSolution: true);
                 break;
 
             case "reroll":
+                var old = session.SlotSymbolIndexes[row, column];
                 session.SlotSymbolIndexes[row, column] = Random.Shared.Next(DailySymbols.Length);
-                FinishBoardManipulation(session, buff, $"cell {row + 1},{column + 1} rerolled");
+                FinishBoardManipulation(session, buff, $"{DailySymbols[old]} rerolled into {DailySymbols[session.SlotSymbolIndexes[row, column]]}", checkSolution: true);
                 break;
 
             case "wild":
@@ -649,12 +651,12 @@ internal sealed class DailySlotsGame
                 session.Balance += wildResult.Payout;
 
                 string solvedText = newlySolved
-                    ? "The selected solution square was revealed."
-                    : "That solution square was already revealed.";
+                    ? "The selected solution symbol was revealed."
+                    : "That solution symbol was already revealed.";
 
                 session.StatusMessage = BuildManipulationStatus(
                     buff,
-                    $"cell {row + 1},{column + 1} became Wild. {solvedText}",
+                    $"symbol at [{row + 1},{column + 1}] became a Wildcard. {solvedText}",
                     wildResult);
                 break;
 
@@ -672,34 +674,47 @@ internal sealed class DailySlotsGame
     private static void FinishBoardManipulation(
         DailySlotsSession session,
         DailyBuffDefinition buff,
-        string actionText)
+        string actionText,
+        bool checkSolution)
     {
-        // Board manipulation deliberately does NOT run solution matching. It can
-        // only earn newly-created 5-in-a-row payouts. Wild is handled separately
-        // because its definition explicitly solves the selected square.
+        int newlyRevealed = checkSolution
+            ? RevealNaturalSolutionHits(session)
+            : 0;
+
         PaylinePayoutResult result = PayNewFiveInARows(session);
         session.Balance += result.Payout;
-        session.StatusMessage = BuildManipulationStatus(buff, actionText, result);
+        session.StatusMessage = BuildManipulationStatus(
+            buff,
+            actionText,
+            result,
+            newlyRevealed);
     }
 
     private static string BuildManipulationStatus(
         DailyBuffDefinition buff,
         string actionText,
-        PaylinePayoutResult result)
+        PaylinePayoutResult result,
+        int newlyRevealed = 0)
     {
-        if (result.LineCount <= 0)
+        var status = new StringBuilder(180);
+        status.Append($"{buff.Emoji} {buff.Name} used — {actionText}.");
+
+        if (newlyRevealed > 0)
         {
-            return $"{buff.Emoji} {buff.Name} used — {actionText}. No new 5-in-a-row; no jackpot payout.";
+            status.Append(
+                $" {newlyRevealed} new solution " +
+                $"{(newlyRevealed == 1 ? "symbol" : "symbols")} revealed!");
         }
 
-        string boostText = result.UsedJackpotBoost
-            ? $" Jackpot Boost x{JackpotBoostMultiplier} applied!"
-            : string.Empty;
+        status.Append(
+            $" {result.LineCount} new 5-in-a-row" +
+            $"{(result.LineCount == 1 ? string.Empty : "s")}! " +
+            $"+${result.Payout:N0}.");
 
-        return
-            $"{buff.Emoji} {buff.Name} used — {actionText}. " +
-            $"{result.LineCount} new 5-in-a-row{(result.LineCount == 1 ? string.Empty : "s")}! " +
-            $"+${result.Payout:N0}.{boostText}";
+        if (result.UsedJackpotBoost)
+            status.Append($" Jackpot Boost x{JackpotBoostMultiplier} applied!");
+
+        return status.ToString();
     }
 
     private static string BuildTargetPrompt(DailyBuffDefinition buff) => buff.Id switch
@@ -708,8 +723,8 @@ internal sealed class DailySlotsGame
         "row-right" => "➡️ Shift Row Right selected — choose any symbol in the row you want to shift.",
         "column-up" => "⬆️ Shift Column Up selected — choose any symbol in the column you want to shift.",
         "column-down" => "⬇️ Shift Column Down selected — choose any symbol in the column you want to shift.",
-        "reroll" => "🎲 Reroll Cell selected — choose the symbol you want to reroll.",
-        "wild" => "🃏 Wild Cell selected — choose the square to turn Wild and solve.",
+        "reroll" => "🎲 Reroll Symbol selected — choose the symbol you want to reroll.",
+        "wild" => "🃏 Wildcard selected — choose the symbol to solve and turn into a Wildcard.",
         _ => $"{buff.Emoji} {buff.Name} selected — choose a target symbol."
     };
 
@@ -755,11 +770,15 @@ internal sealed class DailySlotsGame
                         Random.Shared.Next(DailySymbols.Length);
                 }
             }
-
-            ForceGuaranteedSolutionHits(session, guaranteedHits);
         }
 
-        int newlyRevealed = RevealNaturalSolutionHits(session);
+        // Resolve the completely normal random spin first. Lucky Spin is then
+        // applied as a true bonus on top, so stacked uses can never replace or
+        // overlap solution hits the player would have received naturally.
+        int naturalReveals = RevealNaturalSolutionHits(session);
+        int luckyReveals = RevealGuaranteedBonusSolutions(session, guaranteedHits);
+        int newlyRevealed = naturalReveals + luckyReveals;
+
         long basePayout = CalculateBasePayout(session.SlotSymbolIndexes);
         PaylinePayoutResult paylineResult = PayNewFiveInARows(session);
         long spinPayout = basePayout + paylineResult.Payout;
@@ -778,6 +797,9 @@ internal sealed class DailySlotsGame
             status.Append(" (Double Payout)");
 
         status.Append($" • {newlyRevealed} new solution {(newlyRevealed == 1 ? "cell" : "cells")}");
+
+        if (luckyReveals > 0)
+            status.Append($" ({naturalReveals} natural + {luckyReveals} Lucky Spin)");
 
         if (paylineResult.LineCount > 0)
         {
@@ -798,12 +820,12 @@ internal sealed class DailySlotsGame
         session.StatusMessage = status.ToString();
     }
 
-    private static void ForceGuaranteedSolutionHits(
+    private static int RevealGuaranteedBonusSolutions(
         DailySlotsSession session,
         int guaranteedHits)
     {
         if (guaranteedHits <= 0)
-            return;
+            return 0;
 
         var candidates = new List<(int Row, int Column)>();
 
@@ -816,17 +838,23 @@ internal sealed class DailySlotsGame
             }
         }
 
-        int hitsToForce = Math.Min(guaranteedHits, candidates.Count);
+        int hitsToReveal = Math.Min(guaranteedHits, candidates.Count);
 
-        for (int i = 0; i < hitsToForce; i++)
+        for (int i = 0; i < hitsToReveal; i++)
         {
             int chosenIndex = Random.Shared.Next(i, candidates.Count);
-            (candidates[i], candidates[chosenIndex]) = (candidates[chosenIndex], candidates[i]);
+            (candidates[i], candidates[chosenIndex]) =
+                (candidates[chosenIndex], candidates[i]);
 
             (int row, int column) = candidates[i];
-            session.SlotSymbolIndexes[row, column] =
-                session.SolutionSymbolIndexes[row, column];
+
+            // Lucky Spin is a post-spin bonus. It reveals the solution square
+            // without changing the random slot result, so it cannot create
+            // extra symbol-value or 5-in-a-row payouts.
+            session.RevealedSolutionCells[row, column] = true;
         }
+
+        return hitsToReveal;
     }
 
     private static int RevealNaturalSolutionHits(DailySlotsSession session)
