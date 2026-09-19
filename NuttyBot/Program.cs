@@ -10,10 +10,17 @@ namespace NuttyBot
     {
         private static DiscordSocketClient _client = null!;
         private static readonly SlotGame Slots = new();
+        private static readonly DailySlotsGame DailySlots = new();
         private static readonly HttpClient Http = new();
+        private static readonly ulong[] GuildIds =
+        {
+            150436633748045824, //reign_of_prophecy
+            472949270857777152, //nutty
+            901550346785128458  //xo
+        };
         private const ulong DestinationGuildId = 472949270857777152; //nutty
         private const ulong OwnerUserId = 150069097554509825; //mocktail
-        private const ulong YoinkAnnouncementChannelId = 1550204364583608452; //nutty/general
+        private const ulong YoinkAnnouncementChannelId = 1550204364583608452; //nutty/dev
         //private const ulong YoinkAnnouncementChannelId = 472949270857777154; //nutty/dev
         private const string YoinkEmote = "<:evil_cat_smirk:1549875953914740846>";
 
@@ -49,7 +56,7 @@ namespace NuttyBot
             _client.MessageCommandExecuted += command => DispatchInteractionAsync(() => OnMessageCommand(command), "message command");
             _client.SelectMenuExecuted += component => DispatchInteractionAsync(() => OnSelectMenu(component), "select menu");
             _client.SlashCommandExecuted += command => DispatchInteractionAsync(() => OnSlashCommand(command), "slash command");
-            _client.ButtonExecuted += component => DispatchInteractionAsync(() => Slots.HandleButtonAsync(component), "button");
+            _client.ButtonExecuted += component => DispatchInteractionAsync(() => OnButton(component), "button");
 
             await _client.LoginAsync(TokenType.Bot, token);
             await _client.StartAsync();
@@ -145,6 +152,7 @@ namespace NuttyBot
                 var slotSpeedCommand = SlotGame.CreateSpeedCommand();
                 var slotLeaderboardCommand = SlotGame.CreateLeaderboardCommand();
                 var slotPayoutsCommand = SlotGame.CreatePayoutsCommand();
+                var dailySlotsCommand = DailySlotsGame.CreateCommand();
 
                 if (!existingCommands.Any(x => x.Name == "addemoji"))
                 {
@@ -169,6 +177,11 @@ namespace NuttyBot
                 if (!existingCommands.Any(x => x.Name == "slotspayouts"))
                 {
                     await guild.CreateApplicationCommandAsync(slotPayoutsCommand.Build());
+                }
+
+                if (!existingCommands.Any(x => x.Name == "slotsdaily"))
+                {
+                    await guild.CreateApplicationCommandAsync(dailySlotsCommand.Build());
                 }
 #if false
                 var oldSlotCommand = existingCommands.FirstOrDefault(x => x.Name == "rollslots");
@@ -212,7 +225,19 @@ namespace NuttyBot
                 case "slotspayouts":
                     await Slots.HandlePayoutsSlashCommandAsync(command);
                     break;
+
+                case "slotsdaily":
+                    await DailySlots.HandleSlashCommandAsync(command);
+                    break;
             }
+        }
+
+        private static Task OnButton(SocketMessageComponent component)
+        {
+            if (component.Data.CustomId.StartsWith("slotsdaily:", StringComparison.Ordinal))
+                return DailySlots.HandleButtonAsync(component);
+
+            return Slots.HandleButtonAsync(component);
         }
 
         private static async Task HandleAddEmoji(SocketSlashCommand command)

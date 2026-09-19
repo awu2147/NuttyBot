@@ -105,8 +105,7 @@ internal sealed class SlotGame : IDisposable
     private readonly Dictionary<(ulong GuildId, ulong UserId), PlayerData> _players = [];
     private readonly Dictionary<(ulong GuildId, ulong UserId), PlayerData> _speedPlayers = [];
     private readonly Dictionary<(ulong GuildId, ulong UserId), SlotMachine> _speedMachines = [];
-    private readonly SlotLeaderboard _leaderboard = SlotLeaderboard.Load(
-        Path.Combine(AppContext.BaseDirectory, "slot-leaderboard.json"));
+    private readonly SlotLeaderboard _leaderboard = SlotLeaderboard.Load(Path.Combine(AppContext.BaseDirectory, "slot-leaderboard.json"));
     private Timer? _cleanupTimer;
 
     public static SlashCommandBuilder CreateCommand() => new SlashCommandBuilder().WithName("slots").WithDescription("Open the slot machine lobby");
