@@ -46,7 +46,7 @@ internal sealed class DailySlotsGame
             100,
             2,
             DailyBuffTargetMode.Cell,
-            "Shift the selected row left by one. The leftmost symbol wraps to the right. New solution matches are revealed."),
+            "Shift the selected row left by one. New solution matches are revealed."),
         new(
             "row-right",
             "Shift Row Right",
@@ -54,7 +54,7 @@ internal sealed class DailySlotsGame
             100,
             2,
             DailyBuffTargetMode.Cell,
-            "Shift the selected row right by one. The rightmost symbol wraps to the left. New solution matches are revealed."),
+            "Shift the selected row right by one. New solution matches are revealed."),
         new(
             "column-up",
             "Shift Column Up",
@@ -62,7 +62,7 @@ internal sealed class DailySlotsGame
             100,
             2,
             DailyBuffTargetMode.Cell,
-            "Shift the selected column up by one. The top symbol wraps to the bottom. New solution matches are revealed."),
+            "Shift the selected column up by one. New solution matches are revealed."),
         new(
             "column-down",
             "Shift Column Down",
@@ -70,7 +70,7 @@ internal sealed class DailySlotsGame
             100,
             2,
             DailyBuffTargetMode.Cell,
-            "Shift the selected column down by one. The bottom symbol wraps to the top. New solution matches are revealed."),
+            "Shift the selected column down by one. New solution matches are revealed."),
         new(
             "reroll",
             "Reroll Symbol",
@@ -86,7 +86,7 @@ internal sealed class DailySlotsGame
             300,
             2,
             DailyBuffTargetMode.None,
-            "After the next normal spin resolves, reveal one additional unsolved solution symbol. Stacks with additional uses."),
+            "After the next spin resolves, reveal one unsolved solution symbol. Stackable."),
         new(
             "wild",
             "Wildcard",
@@ -762,24 +762,28 @@ internal sealed class DailySlotsGame
             case "row-left":
                 ShiftRowLeft(session.SlotSymbolIndexes, row);
                 ShiftRowLeft(session.WildcardOriginalSymbolIndexes, row);
+                ShiftRowLeft(session.SlotTokenIds, row);
                 FinishBoardManipulation(session, buff, "Shift Row Left completed", checkSolution: true);
                 break;
 
             case "row-right":
                 ShiftRowRight(session.SlotSymbolIndexes, row);
                 ShiftRowRight(session.WildcardOriginalSymbolIndexes, row);
+                ShiftRowRight(session.SlotTokenIds, row);
                 FinishBoardManipulation(session, buff, "Shift Row Right completed", checkSolution: true);
                 break;
 
             case "column-up":
                 ShiftColumnUp(session.SlotSymbolIndexes, column);
                 ShiftColumnUp(session.WildcardOriginalSymbolIndexes, column);
+                ShiftColumnUp(session.SlotTokenIds, column);
                 FinishBoardManipulation(session, buff, "Shift Column Up completed", checkSolution: true);
                 break;
 
             case "column-down":
                 ShiftColumnDown(session.SlotSymbolIndexes, column);
                 ShiftColumnDown(session.WildcardOriginalSymbolIndexes, column);
+                ShiftColumnDown(session.SlotTokenIds, column);
                 FinishBoardManipulation(session, buff, "Shift Column Down completed", checkSolution: true);
                 break;
 
@@ -978,7 +982,7 @@ internal sealed class DailySlotsGame
     private static void Spin(DailySlotsSession session)
     {
         session.PendingTargetBuffId = null;
-        session.PaidPaylinesThisSpin.Clear();
+        session.PaidPaylineSignaturesThisSpin.Clear();
 
         bool perfectSpin = session.PerfectSpinNextSpin;
         bool doublePayout = session.DoublePayoutNextSpin;
@@ -1010,6 +1014,16 @@ internal sealed class DailySlotsGame
                         Random.Shared.Next(DailySymbols.Length);
                 }
             }
+        }
+
+        // Give every freshly-spun board piece a stable identity. Shift buffs move
+        // these IDs with the symbols, which lets jackpot logic distinguish a
+        // genuinely new symbol entering a payline from the same five pieces merely
+        // being rotated within that payline.
+        for (int row = 0; row < BoardSize; row++)
+        {
+            for (int column = 0; column < BoardSize; column++)
+                session.SlotTokenIds[row, column] = session.NextSlotTokenId++;
         }
 
         // Resolve the completely normal random spin first. Lucky Spin is then
@@ -1185,13 +1199,13 @@ internal sealed class DailySlotsGame
 
         for (int row = 0; row < BoardSize; row++)
         {
-            string key = $"R{row}";
-
-            if (session.PaidPaylinesThisSpin.Contains(key) ||
-                !TryGetHorizontalPaylineSymbol(session.SlotSymbolIndexes, row, out int symbolIndex))
-            {
+            if (!TryGetHorizontalPaylineSymbol(session.SlotSymbolIndexes, row, out int symbolIndex))
                 continue;
-            }
+
+            string signature = BuildHorizontalPaylineSignature(session, row);
+
+            if (!session.PaidPaylineSignaturesThisSpin.Add(signature))
+                continue;
 
             long linePayout = SymbolPayoutValues[symbolIndex] * FiveInARowMultiplier;
 
@@ -1202,20 +1216,19 @@ internal sealed class DailySlotsGame
                 usedJackpotBoost = true;
             }
 
-            session.PaidPaylinesThisSpin.Add(key);
             payout += linePayout;
             lineCount++;
         }
 
         for (int column = 0; column < BoardSize; column++)
         {
-            string key = $"C{column}";
-
-            if (session.PaidPaylinesThisSpin.Contains(key) ||
-                !TryGetVerticalPaylineSymbol(session.SlotSymbolIndexes, column, out int symbolIndex))
-            {
+            if (!TryGetVerticalPaylineSymbol(session.SlotSymbolIndexes, column, out int symbolIndex))
                 continue;
-            }
+
+            string signature = BuildVerticalPaylineSignature(session, column);
+
+            if (!session.PaidPaylineSignaturesThisSpin.Add(signature))
+                continue;
 
             long linePayout = SymbolPayoutValues[symbolIndex] * FiveInARowMultiplier;
 
@@ -1226,20 +1239,19 @@ internal sealed class DailySlotsGame
                 usedJackpotBoost = true;
             }
 
-            session.PaidPaylinesThisSpin.Add(key);
             payout += linePayout;
             lineCount++;
         }
 
         for (int diagonal = 0; diagonal < 2; diagonal++)
         {
-            string key = $"D{diagonal}";
-
-            if (session.PaidPaylinesThisSpin.Contains(key) ||
-                !TryGetDiagonalPaylineSymbol(session.SlotSymbolIndexes, diagonal, out int symbolIndex))
-            {
+            if (!TryGetDiagonalPaylineSymbol(session.SlotSymbolIndexes, diagonal, out int symbolIndex))
                 continue;
-            }
+
+            string signature = BuildDiagonalPaylineSignature(session, diagonal);
+
+            if (!session.PaidPaylineSignaturesThisSpin.Add(signature))
+                continue;
 
             long linePayout = SymbolPayoutValues[symbolIndex] * FiveInARowMultiplier;
 
@@ -1250,12 +1262,63 @@ internal sealed class DailySlotsGame
                 usedJackpotBoost = true;
             }
 
-            session.PaidPaylinesThisSpin.Add(key);
             payout += linePayout;
             lineCount++;
         }
 
         return new PaylinePayoutResult(payout, lineCount, usedJackpotBoost);
+    }
+
+    private static string BuildHorizontalPaylineSignature(
+        DailySlotsSession session,
+        int row)
+    {
+        var tokenIds = new long[BoardSize];
+
+        for (int column = 0; column < BoardSize; column++)
+            tokenIds[column] = session.SlotTokenIds[row, column];
+
+        return BuildPaylineSignature($"R{row}", tokenIds);
+    }
+
+    private static string BuildVerticalPaylineSignature(
+        DailySlotsSession session,
+        int column)
+    {
+        var tokenIds = new long[BoardSize];
+
+        for (int row = 0; row < BoardSize; row++)
+            tokenIds[row] = session.SlotTokenIds[row, column];
+
+        return BuildPaylineSignature($"C{column}", tokenIds);
+    }
+
+    private static string BuildDiagonalPaylineSignature(
+        DailySlotsSession session,
+        int diagonal)
+    {
+        var tokenIds = new long[BoardSize];
+
+        for (int row = 0; row < BoardSize; row++)
+        {
+            int column = diagonal == 0
+                ? row
+                : BoardSize - 1 - row;
+
+            tokenIds[row] = session.SlotTokenIds[row, column];
+        }
+
+        return BuildPaylineSignature($"D{diagonal}", tokenIds);
+    }
+
+    private static string BuildPaylineSignature(string lineKey, long[] tokenIds)
+    {
+        // Order is intentionally ignored. Rotating the same five pieces inside a
+        // winning row/column is still the same jackpot. A perpendicular shift that
+        // moves a neighbouring piece into the line changes the token set and can
+        // therefore award that line once more.
+        Array.Sort(tokenIds);
+        return $"{lineKey}:{string.Join(",", tokenIds)}";
     }
 
     private static bool TryGetHorizontalPaylineSymbol(
@@ -1361,6 +1424,49 @@ internal sealed class DailySlotsGame
         return true;
     }
 
+    private static bool[,] BuildActivePaylineCellMask(int[,] board)
+    {
+        var winningCells = new bool[BoardSize, BoardSize];
+
+        // Derive highlighting from the current board rather than payout history.
+        // Any board manipulation that creates or breaks a 5-in-a-row therefore
+        // updates the green cells immediately on the next view rebuild.
+        for (int row = 0; row < BoardSize; row++)
+        {
+            if (!TryGetHorizontalPaylineSymbol(board, row, out _))
+                continue;
+
+            for (int column = 0; column < BoardSize; column++)
+                winningCells[row, column] = true;
+        }
+
+        for (int column = 0; column < BoardSize; column++)
+        {
+            if (!TryGetVerticalPaylineSymbol(board, column, out _))
+                continue;
+
+            for (int row = 0; row < BoardSize; row++)
+                winningCells[row, column] = true;
+        }
+
+        for (int diagonal = 0; diagonal < 2; diagonal++)
+        {
+            if (!TryGetDiagonalPaylineSymbol(board, diagonal, out _))
+                continue;
+
+            for (int i = 0; i < BoardSize; i++)
+            {
+                int column = diagonal == 0
+                    ? i
+                    : BoardSize - 1 - i;
+
+                winningCells[i, column] = true;
+            }
+        }
+
+        return winningCells;
+    }
+
     private static int GetHighestPayingSymbolIndex()
     {
         int bestIndex = 0;
@@ -1383,9 +1489,9 @@ internal sealed class DailySlotsGame
         }
     }
 
-    private static void ShiftRowLeft(int[,] board, int row)
+    private static void ShiftRowLeft<T>(T[,] board, int row)
     {
-        int first = board[row, 0];
+        T first = board[row, 0];
 
         for (int column = 0; column < BoardSize - 1; column++)
             board[row, column] = board[row, column + 1];
@@ -1393,9 +1499,9 @@ internal sealed class DailySlotsGame
         board[row, BoardSize - 1] = first;
     }
 
-    private static void ShiftRowRight(int[,] board, int row)
+    private static void ShiftRowRight<T>(T[,] board, int row)
     {
-        int last = board[row, BoardSize - 1];
+        T last = board[row, BoardSize - 1];
 
         for (int column = BoardSize - 1; column > 0; column--)
             board[row, column] = board[row, column - 1];
@@ -1403,9 +1509,9 @@ internal sealed class DailySlotsGame
         board[row, 0] = last;
     }
 
-    private static void ShiftColumnUp(int[,] board, int column)
+    private static void ShiftColumnUp<T>(T[,] board, int column)
     {
-        int first = board[0, column];
+        T first = board[0, column];
 
         for (int row = 0; row < BoardSize - 1; row++)
             board[row, column] = board[row + 1, column];
@@ -1413,9 +1519,9 @@ internal sealed class DailySlotsGame
         board[BoardSize - 1, column] = first;
     }
 
-    private static void ShiftColumnDown(int[,] board, int column)
+    private static void ShiftColumnDown<T>(T[,] board, int column)
     {
-        int last = board[BoardSize - 1, column];
+        T last = board[BoardSize - 1, column];
 
         for (int row = BoardSize - 1; row > 0; row--)
             board[row, column] = board[row - 1, column];
@@ -1486,6 +1592,8 @@ internal sealed class DailySlotsGame
 
     private static MessageComponent BuildGameView(DailySlotsSession session)
     {
+        bool[,] activePaylineCells = BuildActivePaylineCellMask(session.SlotSymbolIndexes);
+
         // 40/40 Components V2 budget:
         //   container 1
         //   header/payout text 1
@@ -1496,8 +1604,8 @@ internal sealed class DailySlotsGame
         var container = new ContainerBuilder()
             .WithAccentColor(new Color(241, 196, 15))
             .WithTextDisplay(
-                "## 🎰 Daily Slots\n" +
-                "**Solution:**\n" +
+                "## 🎰 Daily Slots 🎰\n" +
+                "**Solution Board:**\n" +
                 BuildSolutionGridText(session) +
                 "\n\n**Slot Machine:**\n" +
                 BuildPayoutLegend());
@@ -1520,7 +1628,9 @@ internal sealed class DailySlotsGame
                     new ButtonBuilder()
                         .WithCustomId(
                             $"slotsdaily:cell:{session.UserId}:{session.SessionId}:{row}:{column}")
-                        .WithStyle(ButtonStyle.Secondary)
+                        .WithStyle(activePaylineCells[row, column]
+                            ? ButtonStyle.Success
+                            : ButtonStyle.Secondary)
                         .WithEmote(new Emoji(emoji)));
             }
 
@@ -1687,7 +1797,13 @@ internal sealed class DailySlotsGame
         public ulong GuildId { get; } = guildId;
         public ulong UserId { get; } = userId;
         public string SessionId { get; } = sessionId;
-        public HashSet<string> SelectedBuffIds { get; } = [];
+        public HashSet<string> SelectedBuffIds { get; } =
+        [
+            "row-right",
+            "column-down",
+            "lucky-spin",
+            "wild"
+        ];
 
         public bool Started { get; private set; }
         public DateOnly SolutionDate { get; private set; }
@@ -1697,8 +1813,9 @@ internal sealed class DailySlotsGame
             new bool[BoardSize, BoardSize, DailySymbols.Length];
         public int[,] SlotSymbolIndexes { get; } = CreateEmptySlotBoard();
         public int[,] WildcardOriginalSymbolIndexes { get; } = CreateEmptySlotBoard();
+        public long[,] SlotTokenIds { get; } = new long[BoardSize, BoardSize];
         public List<DailyBuffState> Buffs { get; } = [];
-        public HashSet<string> PaidPaylinesThisSpin { get; } = [];
+        public HashSet<string> PaidPaylineSignaturesThisSpin { get; } = [];
 
         public long Balance { get; set; }
         public int SpinsRemaining { get; set; } = MaxSpins;
@@ -1709,6 +1826,7 @@ internal sealed class DailySlotsGame
         public bool DoublePayoutNextSpin { get; set; }
         public bool JackpotBoostPending { get; set; }
         public bool PerfectSpinNextSpin { get; set; }
+        public long NextSlotTokenId { get; set; } = 1;
 
         public bool IsSolutionComplete
         {
@@ -1743,8 +1861,10 @@ internal sealed class DailySlotsGame
             DoublePayoutNextSpin = false;
             JackpotBoostPending = false;
             PerfectSpinNextSpin = false;
-            PaidPaylinesThisSpin.Clear();
+            NextSlotTokenId = 1;
+            PaidPaylineSignaturesThisSpin.Clear();
             ClearBoard(WildcardOriginalSymbolIndexes, -1);
+            Array.Clear(SlotTokenIds, 0, SlotTokenIds.Length);
             Array.Clear(EliminatedSolutionSymbols, 0, EliminatedSolutionSymbols.Length);
 
             Buffs.Clear();
@@ -1765,9 +1885,10 @@ internal sealed class DailySlotsGame
             (bool[,,])EliminatedSolutionSymbols.Clone(),
             (int[,])SlotSymbolIndexes.Clone(),
             (int[,])WildcardOriginalSymbolIndexes.Clone(),
+            (long[,])SlotTokenIds.Clone(),
             SelectedBuffIds.ToArray(),
             Buffs.Select(x => (x.Definition, x.UsesRemaining)).ToArray(),
-            PaidPaylinesThisSpin.ToArray(),
+            PaidPaylineSignaturesThisSpin.ToArray(),
             Balance,
             SpinsRemaining,
             HasSpunAtLeastOnce,
@@ -1776,7 +1897,8 @@ internal sealed class DailySlotsGame
             GuaranteedSolutionHitsNextSpin,
             DoublePayoutNextSpin,
             JackpotBoostPending,
-            PerfectSpinNextSpin);
+            PerfectSpinNextSpin,
+            NextSlotTokenId);
 
         public void RestoreSnapshot(DailySlotsSessionSnapshot snapshot)
         {
@@ -1787,6 +1909,7 @@ internal sealed class DailySlotsGame
             CopyArray(snapshot.EliminatedSolutionSymbols, EliminatedSolutionSymbols);
             CopyArray(snapshot.SlotSymbolIndexes, SlotSymbolIndexes);
             CopyArray(snapshot.WildcardOriginalSymbolIndexes, WildcardOriginalSymbolIndexes);
+            CopyArray(snapshot.SlotTokenIds, SlotTokenIds);
 
             SelectedBuffIds.Clear();
             foreach (string id in snapshot.SelectedBuffIds)
@@ -1796,9 +1919,9 @@ internal sealed class DailySlotsGame
             foreach ((DailyBuffDefinition definition, int usesRemaining) in snapshot.Buffs)
                 Buffs.Add(new DailyBuffState(definition, usesRemaining));
 
-            PaidPaylinesThisSpin.Clear();
-            foreach (string key in snapshot.PaidPaylinesThisSpin)
-                PaidPaylinesThisSpin.Add(key);
+            PaidPaylineSignaturesThisSpin.Clear();
+            foreach (string key in snapshot.PaidPaylineSignaturesThisSpin)
+                PaidPaylineSignaturesThisSpin.Add(key);
 
             Balance = snapshot.Balance;
             SpinsRemaining = snapshot.SpinsRemaining;
@@ -1809,6 +1932,7 @@ internal sealed class DailySlotsGame
             DoublePayoutNextSpin = snapshot.DoublePayoutNextSpin;
             JackpotBoostPending = snapshot.JackpotBoostPending;
             PerfectSpinNextSpin = snapshot.PerfectSpinNextSpin;
+            NextSlotTokenId = snapshot.NextSlotTokenId;
         }
 
         private static void CopyArray<T>(T[,] source, T[,] destination)
@@ -1856,9 +1980,10 @@ internal sealed class DailySlotsGame
         bool[,,] EliminatedSolutionSymbols,
         int[,] SlotSymbolIndexes,
         int[,] WildcardOriginalSymbolIndexes,
+        long[,] SlotTokenIds,
         string[] SelectedBuffIds,
         (DailyBuffDefinition Definition, int UsesRemaining)[] Buffs,
-        string[] PaidPaylinesThisSpin,
+        string[] PaidPaylineSignaturesThisSpin,
         long Balance,
         int SpinsRemaining,
         bool HasSpunAtLeastOnce,
@@ -1867,7 +1992,8 @@ internal sealed class DailySlotsGame
         int GuaranteedSolutionHitsNextSpin,
         bool DoublePayoutNextSpin,
         bool JackpotBoostPending,
-        bool PerfectSpinNextSpin);
+        bool PerfectSpinNextSpin,
+        long NextSlotTokenId);
 
     private sealed class DailyBuffState(
         DailyBuffDefinition definition,
