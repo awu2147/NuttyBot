@@ -25,18 +25,14 @@ internal sealed class DailySlotsGame
 
     private static readonly string[] DailySymbols =
     [
-        "🍒", "🍋", "🍊", "🍇", "🍉", "🔔",
-        "💎", "👑", "🍀", "🪙", "💰", "🌟"
+        "🍒", "🍋", "🍊", "🍇", "🍉", "🔔"
     ];
 
     // Every symbol shown on a normal spin pays this value. A completed
     // horizontal or vertical 5-in-a-row pays that symbol's value x100.
-    // 🌟 is deliberately worth $100 so its 5-in-a-row jackpot is $10,000,
-    // enough to fund Perfect Spin by itself.
     private static readonly int[] SymbolPayoutValues =
     [
-        1, 2, 3, 4, 5, 6,
-        8, 10, 15, 25, 50, 100
+        2, 3, 5, 8, 13, 21
     ];
 
     private static readonly DailyBuffDefinition[] BuffDefinitions =
@@ -430,8 +426,13 @@ internal sealed class DailySlotsGame
                     }
                     else if (session.PendingTargetBuffId == buffId)
                     {
-                        session.PendingTargetBuffId = null;
-                        session.StatusMessage = $"{buffState.Definition.Name} cancelled.";
+                        // Re-clicking an already-selected shift buff intentionally does nothing.
+                        // Other targeted buffs keep the existing click-again-to-cancel behaviour.
+                        if (buffId is not ("row-left" or "row-right" or "column-up" or "column-down"))
+                        {
+                            session.PendingTargetBuffId = null;
+                            session.StatusMessage = $"{buffState.Definition.Name} cancelled.";
+                        }
                     }
                     else
                     {
@@ -614,35 +615,38 @@ internal sealed class DailySlotsGame
         SpendBuff(session, buffState);
         session.PendingTargetBuffId = null;
 
+        int oldSymbol;
+
         switch (buff.Id)
         {
             case "row-left":
                 ShiftRowLeft(session.SlotSymbolIndexes, row);
-                FinishBoardManipulation(session, buff, $"row {row + 1} shifted left", checkSolution: true);
+                FinishBoardManipulation(session, buff, $"Row shifted left", checkSolution: true);
                 break;
 
             case "row-right":
                 ShiftRowRight(session.SlotSymbolIndexes, row);
-                FinishBoardManipulation(session, buff, $"row {row + 1} shifted right", checkSolution: true);
+                FinishBoardManipulation(session, buff, $"Row shifted right", checkSolution: true);
                 break;
 
             case "column-up":
                 ShiftColumnUp(session.SlotSymbolIndexes, column);
-                FinishBoardManipulation(session, buff, $"column {column + 1} shifted up", checkSolution: true);
+                FinishBoardManipulation(session, buff, $"Column shifted up", checkSolution: true);
                 break;
 
             case "column-down":
                 ShiftColumnDown(session.SlotSymbolIndexes, column);
-                FinishBoardManipulation(session, buff, $"column {column + 1} shifted down", checkSolution: true);
+                FinishBoardManipulation(session, buff, $"Column shifted down", checkSolution: true);
                 break;
 
             case "reroll":
-                var old = session.SlotSymbolIndexes[row, column];
+                oldSymbol = session.SlotSymbolIndexes[row, column];
                 session.SlotSymbolIndexes[row, column] = Random.Shared.Next(DailySymbols.Length);
-                FinishBoardManipulation(session, buff, $"{DailySymbols[old]} rerolled into {DailySymbols[session.SlotSymbolIndexes[row, column]]}", checkSolution: true);
+                FinishBoardManipulation(session, buff, $"{DailySymbols[oldSymbol]} rerolled into {DailySymbols[session.SlotSymbolIndexes[row, column]]}", checkSolution: true);
                 break;
 
             case "wild":
+                oldSymbol = session.SlotSymbolIndexes[row, column];
                 session.SlotSymbolIndexes[row, column] = WildSymbolIndex;
                 bool newlySolved = !session.RevealedSolutionCells[row, column];
                 session.RevealedSolutionCells[row, column] = true;
@@ -656,7 +660,7 @@ internal sealed class DailySlotsGame
 
                 session.StatusMessage = BuildManipulationStatus(
                     buff,
-                    $"symbol at [{row + 1},{column + 1}] became a Wildcard. {solvedText}",
+                    $"{DailySymbols[oldSymbol]} became a {DailySymbols[session.SlotSymbolIndexes[row, column]]}. {solvedText}",
                     wildResult);
                 break;
 
@@ -697,7 +701,7 @@ internal sealed class DailySlotsGame
         int newlyRevealed = 0)
     {
         var status = new StringBuilder(180);
-        status.Append($"{buff.Emoji} {buff.Name} used — {actionText}.");
+        status.Append($"{buff.Emoji} {actionText}.");
 
         if (newlyRevealed > 0)
         {
@@ -706,10 +710,16 @@ internal sealed class DailySlotsGame
                 $"{(newlyRevealed == 1 ? "symbol" : "symbols")} revealed!");
         }
 
+        if (result.LineCount > 0)
+        {
+            status.Append(
+                $" {result.LineCount} new Jackpot" +
+                $"{(result.LineCount == 1 ? string.Empty : "s")}" +
+                $"!");
+        }
+
         status.Append(
-            $" {result.LineCount} new 5-in-a-row" +
-            $"{(result.LineCount == 1 ? string.Empty : "s")}! " +
-            $"+${result.Payout:N0}.");
+            $" +${result.Payout:N0}.");
 
         if (result.UsedJackpotBoost)
             status.Append($" Jackpot Boost x{JackpotBoostMultiplier} applied!");
