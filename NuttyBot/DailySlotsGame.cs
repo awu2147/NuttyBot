@@ -616,7 +616,7 @@ internal sealed class DailySlotsGame
                 SpendBuff(session, buffState);
                 session.GuaranteedSolutionHitsNextSpin++;
                 session.StatusMessage =
-                    $"🍀 Lucky Spin used! Next spin will reveal " +
+                    $"{buff.Emoji} Lucky Spin used! Next spin will reveal " +
                     $"{session.GuaranteedSolutionHitsNextSpin} bonus solution " +
                     $"{(session.GuaranteedSolutionHitsNextSpin == 1 ? "symbol" : "symbols")} " +
                     "after the regular spin resolves.";
@@ -625,38 +625,38 @@ internal sealed class DailySlotsGame
             case "double-payout":
                 if (session.DoublePayoutNextSpin)
                 {
-                    session.StatusMessage = "💵 Double Payout is already armed for the next spin.";
+                    session.StatusMessage = $"{buff.Emoji} Double Payout is already armed for the next spin.";
                     return;
                 }
 
                 SpendBuff(session, buffState);
                 session.DoublePayoutNextSpin = true;
-                session.StatusMessage = "💵 Double Payout used! All money from the next Spin will be doubled.";
+                session.StatusMessage = $"{buff.Emoji} Double Payout used! All money from the next Spin will be doubled.";
                 break;
 
             case "jackpot-boost":
                 if (session.JackpotBoostPending)
                 {
-                    session.StatusMessage = "💰 Jackpot Boost is already waiting for your next 5-in-a-row.";
+                    session.StatusMessage = $"{buff.Emoji} Jackpot Boost is already waiting for your next 5-in-a-row.";
                     return;
                 }
 
                 SpendBuff(session, buffState);
                 session.JackpotBoostPending = true;
                 session.StatusMessage =
-                    $"💰 Jackpot Boost used! Your next new 5-in-a-row payout will be x{JackpotBoostMultiplier}.";
+                    $"{buff.Emoji} Jackpot Boost used! Your next new 5-in-a-row payout will be x{JackpotBoostMultiplier}.";
                 break;
 
             case "perfect-spin":
                 if (session.PerfectSpinNextSpin)
                 {
-                    session.StatusMessage = "🌟 Perfect Spin is already armed.";
+                    session.StatusMessage = $"{buff.Emoji} Perfect Spin is already armed.";
                     return;
                 }
 
                 SpendBuff(session, buffState);
                 session.PerfectSpinNextSpin = true;
-                session.StatusMessage = "🌟 Perfect Spin armed! Your next spin will exactly match the solution board.";
+                session.StatusMessage = $"{buff.Emoji} Perfect Spin armed! Your next spin will exactly match the solution board.";
                 break;
 
             default:
@@ -686,7 +686,7 @@ internal sealed class DailySlotsGame
         if (buff.Id == "wild" && currentSymbol == WildSymbolIndex)
         {
             session.PendingTargetBuffId = null;
-            session.StatusMessage = "🃏 That symbol is already a Wildcard.";
+            session.StatusMessage = $"{buff.Emoji} That symbol is already a Wildcard.";
             return;
         }
 
@@ -728,7 +728,7 @@ internal sealed class DailySlotsGame
                 FinishBoardManipulation(
                     session,
                     buff,
-                    $"{FormatSlotSymbol(oldSymbol)} rerolled into {DailySymbols[session.SlotSymbolIndexes[row, column]]}",
+                    $"Symbol {FormatSlotSymbol(oldSymbol)} rerolled into {DailySymbols[session.SlotSymbolIndexes[row, column]]}",
                     checkSolution: true);
                 break;
 
@@ -748,7 +748,7 @@ internal sealed class DailySlotsGame
 
                 session.StatusMessage = BuildManipulationStatus(
                     buff,
-                    $"Symbol {FormatSlotSymbol(oldSymbol)} became a Wildcard 🃏",
+                    $"Symbol {FormatSlotSymbol(oldSymbol)} became a Wildcard {buff.Emoji}",
                     wildResult,
                     newlySolved ? 1 : 0,
                     prependBuffEmoji: false);
@@ -878,16 +878,21 @@ internal sealed class DailySlotsGame
             builder.Append('.');
     }
 
-    private static string BuildTargetPrompt(DailyBuffDefinition buff) => buff.Id switch
+    private static string BuildTargetPrompt(DailyBuffDefinition buff)
     {
-        "row-left" => "⬅️ Shift Row Left selected — choose any symbol in the row you want to shift.",
-        "row-right" => "➡️ Shift Row Right selected — choose any symbol in the row you want to shift.",
-        "column-up" => "⬆️ Shift Column Up selected — choose any symbol in the column you want to shift.",
-        "column-down" => "⬇️ Shift Column Down selected — choose any symbol in the column you want to shift.",
-        "reroll" => "🎲 Reroll Symbol selected — choose the symbol you want to reroll.",
-        "wild" => "🃏 Wildcard selected — choose the symbol to solve and turn into a Wildcard.",
-        _ => $"{buff.Emoji} {buff.Name} selected — choose a target symbol."
-    };
+        string prompt = buff.Id switch
+        {
+            "row-left" => "Shift Row Left selected — choose any symbol in the row you want to shift.",
+            "row-right" => "Shift Row Right selected — choose any symbol in the row you want to shift.",
+            "column-up" => "Shift Column Up selected — choose any symbol in the column you want to shift.",
+            "column-down" => "Shift Column Down selected — choose any symbol in the column you want to shift.",
+            "reroll" => "Reroll Symbol selected — choose the symbol you want to reroll.",
+            "wild" => "Wildcard selected — choose the symbol to solve and turn into a Wildcard.",
+            _ => $"{buff.Name} selected — choose a target symbol."
+        };
+
+        return $"{buff.Emoji} {prompt}";
+    }
 
     private static void SpendBuff(
         DailySlotsSession session,
@@ -1342,10 +1347,10 @@ internal sealed class DailySlotsGame
                 bool selected = session.SelectedBuffIds.Contains(buff.Id);
 
                 var button = new ButtonBuilder()
+                    .WithLabel(buff.Emoji)
                     .WithCustomId(
                         $"slotsdaily:buff:{session.UserId}:{session.SessionId}:{buff.Id}")
-                    .WithStyle(selected ? ButtonStyle.Success : ButtonStyle.Secondary)
-                    .WithEmote(new Emoji(buff.Emoji));
+                    .WithStyle(selected ? ButtonStyle.Success : ButtonStyle.Secondary);
 
                 actionRow.WithButton(button);
             }
@@ -1437,15 +1442,19 @@ internal sealed class DailySlotsGame
         foreach (DailyBuffState buffState in session.Buffs)
         {
             bool hasUses = buffState.UsesRemaining > 0;
+            bool canAfford = session.Balance >= buffState.Definition.Cost;
+            bool isAvailable = hasUses && canAfford;
 
             buffRow.WithButton(
                 new ButtonBuilder()
-                    .WithLabel($"{buffState.UsesRemaining}/{buffState.Definition.UseCount}")
+                    .WithLabel(
+                        $"${buffState.Definition.Cost:N0} " +
+                        $"{buffState.Definition.Emoji} " +
+                        $"{buffState.UsesRemaining}/{buffState.Definition.UseCount}")
                     .WithCustomId(
                         $"slotsdaily:use:{session.UserId}:{session.SessionId}:{buffState.Definition.Id}")
-                    .WithStyle(hasUses ? ButtonStyle.Primary : ButtonStyle.Secondary)
-                    .WithEmote(new Emoji(buffState.Definition.Emoji))
-                    .WithDisabled(!hasUses));
+                    .WithStyle(isAvailable ? ButtonStyle.Primary : ButtonStyle.Secondary)
+                    .WithDisabled(!isAvailable));
         }
 
         container.WithActionRow(buffRow);
