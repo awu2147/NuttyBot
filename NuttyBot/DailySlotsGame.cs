@@ -1535,7 +1535,7 @@ internal sealed class DailySlotsGame
 
         var container = new ContainerBuilder()
             .WithAccentColor(new Color(241, 196, 15))
-            .WithTextDisplay("## 🎰 Daily Slots")
+            .WithTextDisplay("## 🎰 Daily Slots 🎰")
             .WithTextDisplay($"**Select buffs to begin ({selectedCount}/{MaxSelectedBuffs})**");
 
         for (int row = 0; row < 2; row++)
