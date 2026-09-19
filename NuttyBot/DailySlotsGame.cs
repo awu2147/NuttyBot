@@ -13,7 +13,7 @@ internal sealed class DailySlotsGame
     private const int MaxSpins = 10;
     private const int WildSymbolIndex = -2;
     private const int FiveInARowMultiplier = 100;
-    private const int JackpotBoostMultiplier = 3;
+    private const int JackpotBoostMultiplier = 5;
     private const int SolutionRevealReward = 20;
 
     // Discord Components V2 allows 40 total components per message. The game
@@ -27,14 +27,14 @@ internal sealed class DailySlotsGame
 
     private static readonly string[] DailySymbols =
     [
-        "🍒", "🍋", "🍊", "🍇", "🍉", "🔔"
+        "🍒", "🍋", "🍊", "🍇", "🍉"
     ];
 
     // Every symbol shown on a normal spin pays this value. A completed
     // horizontal, vertical, or diagonal 5-in-a-row pays that symbol's value x100.
     private static readonly int[] SymbolPayoutValues =
     [
-        2, 3, 5, 8, 13, 21
+        3, 5, 8, 13, 21
     ];
 
     private static readonly DailyBuffDefinition[] BuffDefinitions =
@@ -99,7 +99,7 @@ internal sealed class DailySlotsGame
             "double-payout",
             "Double Payout",
             "💵",
-            650,
+            200,
             1,
             DailyBuffTargetMode.None,
             "Double all money earned when you press Spin next."),
@@ -107,7 +107,7 @@ internal sealed class DailySlotsGame
             "jackpot-boost",
             "Jackpot Boost",
             "💰",
-            1_000,
+            555,
             1,
             DailyBuffTargetMode.None,
             $"The next new 5-in-a-row payout is multiplied by {JackpotBoostMultiplier}."),
@@ -115,7 +115,7 @@ internal sealed class DailySlotsGame
             "perfect-spin",
             "Perfect Spin",
             "🌟",
-            10_000,
+            6_000,
             1,
             DailyBuffTargetMode.None,
             "Your next spin exactly matches the daily solution board.")
@@ -747,6 +747,7 @@ internal sealed class DailySlotsGame
                 break;
 
             case "wild":
+                bool wasSolutionComplete = session.IsSolutionComplete;
                 oldSymbol = GetUnderlyingSlotSymbolIndex(session, row, column);
                 session.WildcardOriginalSymbolIndexes[row, column] = oldSymbol;
                 session.SlotSymbolIndexes[row, column] = WildSymbolIndex;
@@ -764,7 +765,8 @@ internal sealed class DailySlotsGame
                     buff,
                     $"Symbol {FormatSlotSymbol(oldSymbol)} became a Wildcard {buff.Emoji}",
                     wildResult,
-                    newlySolved ? 1 : 0);
+                    newlySolved ? 1 : 0,
+                    solutionCompleted: !wasSolutionComplete && session.IsSolutionComplete);
                 break;
 
             default:
@@ -820,6 +822,7 @@ internal sealed class DailySlotsGame
         string actionText,
         bool checkSolution)
     {
+        bool wasSolutionComplete = session.IsSolutionComplete;
         int newlyRevealed = 0;
 
         if (checkSolution)
@@ -842,14 +845,16 @@ internal sealed class DailySlotsGame
             buff,
             actionText,
             result,
-            newlyRevealed);
+            newlyRevealed,
+            solutionCompleted: !wasSolutionComplete && session.IsSolutionComplete);
     }
 
     private static string BuildManipulationStatus(
         DailyBuffDefinition buff,
         string actionText,
         PaylinePayoutResult result,
-        int newlyRevealed = 0)
+        int newlyRevealed = 0,
+        bool solutionCompleted = false)
     {
         var status = new StringBuilder(180);
         status.Append(buff.Emoji);
@@ -871,6 +876,9 @@ internal sealed class DailySlotsGame
                 $"{(result.LineCount == 1 ? string.Empty : "s")}" +
                 $"!");
         }
+
+        if (solutionCompleted)
+            status.Append(" Solution complete!");
 
         long totalPayout = result.Payout + ((long)newlyRevealed * SolutionRevealReward);
         status.Append($" +${totalPayout:N0}.");
