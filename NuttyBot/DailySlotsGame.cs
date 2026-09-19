@@ -445,27 +445,34 @@ internal sealed class DailySlotsGame
 
                 if (buffState is null)
                 {
-                    session.StatusMessage = "That buff is not in this run's loadout.";
+                    session.StatusMessage = BuildStatus("⚠️", "That buff is not in this run's loadout.");
                 }
                 else if (buffState.UsesRemaining <= 0)
                 {
-                    session.StatusMessage = $"{buffState.Definition.Emoji} {buffState.Definition.Name} has no uses remaining.";
+                    session.StatusMessage = BuildStatus(
+                        buffState.Definition.Emoji,
+                        $"{buffState.Definition.Name} has no uses remaining.");
                 }
                 else if (session.Balance < buffState.Definition.Cost)
                 {
-                    session.StatusMessage =
-                        $"You need ${buffState.Definition.Cost:N0} to use {buffState.Definition.Name}.";
+                    session.StatusMessage = BuildStatus(
+                        "💰",
+                        $"You need ${buffState.Definition.Cost:N0} to use {buffState.Definition.Name}.");
                 }
                 else if (buffState.Definition.TargetMode == DailyBuffTargetMode.Cell)
                 {
                     if (!session.HasSpunAtLeastOnce)
                     {
-                        session.StatusMessage = "Spin the slots once before using a board-manipulation buff.";
+                        session.StatusMessage = BuildStatus(
+                            buffState.Definition.Emoji,
+                            "Spin the slots once before using a board-manipulation buff.");
                     }
                     else if (session.PendingTargetBuffId == buffId)
                     {
                         session.PendingTargetBuffId = null;
-                        session.StatusMessage = $"{buffState.Definition.Name} cancelled.";
+                        session.StatusMessage = BuildStatus(
+                            buffState.Definition.Emoji,
+                            $"{buffState.Definition.Name} cancelled.");
                     }
                     else
                     {
@@ -475,7 +482,9 @@ internal sealed class DailySlotsGame
                 }
                 else if (session.SpinsRemaining <= 0 || session.IsSolutionComplete)
                 {
-                    session.StatusMessage = "There is no future spin available for that buff.";
+                    session.StatusMessage = BuildStatus(
+                        buffState.Definition.Emoji,
+                        "There is no future spin available for that buff.");
                 }
                 else
                 {
@@ -522,7 +531,7 @@ internal sealed class DailySlotsGame
             }
             else if (row < 0 || row >= BoardSize || column < 0 || column >= BoardSize)
             {
-                session.StatusMessage = "That target cell is invalid.";
+                session.StatusMessage = BuildStatus("⚠️", "That target cell is invalid.");
                 view = BuildGameView(session);
             }
             else if (string.IsNullOrWhiteSpace(session.PendingTargetBuffId))
@@ -538,13 +547,14 @@ internal sealed class DailySlotsGame
                 if (buffState is null || buffState.UsesRemaining <= 0)
                 {
                     session.PendingTargetBuffId = null;
-                    session.StatusMessage = "That buff is no longer available.";
+                    session.StatusMessage = BuildStatus("⚠️", "That buff is no longer available.");
                 }
                 else if (session.Balance < buffState.Definition.Cost)
                 {
                     session.PendingTargetBuffId = null;
-                    session.StatusMessage =
-                        $"You need ${buffState.Definition.Cost:N0} to use {buffState.Definition.Name}.";
+                    session.StatusMessage = BuildStatus(
+                        "💰",
+                        $"You need ${buffState.Definition.Cost:N0} to use {buffState.Definition.Name}.");
                 }
                 else
                 {
@@ -570,27 +580,20 @@ internal sealed class DailySlotsGame
         await UpdateMessageAsync(component, view);
     }
 
+    private static string BuildStatus(string contextEmoji, string message) =>
+        $"{contextEmoji} • {message}";
+
     private static string BuildPossibleSymbolsStatus(
         DailySlotsSession session,
         int row,
         int column)
     {
-        string wildcardContext = string.Empty;
-
-        if (session.SlotSymbolIndexes[row, column] == WildSymbolIndex)
-        {
-            int originalSymbolIndex = session.WildcardOriginalSymbolIndexes[row, column];
-
-            if (originalSymbolIndex >= 0 && originalSymbolIndex < DailySymbols.Length)
-                wildcardContext = $" • Wildcard replaced: {DailySymbols[originalSymbolIndex]}";
-        }
-
-        string header = $"Possible symbols for position [{row + 1},{column + 1}]:";
+        string header = $"🔎 • Possible symbols for position [{row + 1},{column + 1}]:";
 
         if (session.RevealedSolutionCells[row, column])
         {
             int solvedSymbolIndex = session.SolutionSymbolIndexes[row, column];
-            return $"{header}\n{DailySymbols[solvedSymbolIndex]}{wildcardContext}";
+            return $"{header}\n{DailySymbols[solvedSymbolIndex]}";
         }
 
         var possibleSymbols = new List<string>(DailySymbols.Length);
@@ -601,7 +604,7 @@ internal sealed class DailySlotsGame
                 possibleSymbols.Add(DailySymbols[symbolIndex]);
         }
 
-        return $"{header}\n{string.Join(" ", possibleSymbols)}{wildcardContext}";
+        return $"{header}\n{string.Join(" ", possibleSymbols)}";
     }
 
     private static void ActivateImmediateBuff(
@@ -616,51 +619,60 @@ internal sealed class DailySlotsGame
                 SpendBuff(session, buffState);
                 session.GuaranteedSolutionHitsNextSpin++;
                 session.StatusMessage =
-                    $"{buff.Emoji} Lucky Spin used! Next spin will reveal " +
+                    BuildStatus(buff.Emoji, "Lucky Spin used! Next spin will reveal " +
                     $"{session.GuaranteedSolutionHitsNextSpin} bonus solution " +
                     $"{(session.GuaranteedSolutionHitsNextSpin == 1 ? "symbol" : "symbols")} " +
-                    "after the regular spin resolves.";
+                    "after the regular spin resolves.");
                 break;
 
             case "double-payout":
                 if (session.DoublePayoutNextSpin)
                 {
-                    session.StatusMessage = $"{buff.Emoji} Double Payout is already armed for the next spin.";
+                    session.StatusMessage = BuildStatus(
+                        buff.Emoji,
+                        "Double Payout is already armed for the next spin.");
                     return;
                 }
 
                 SpendBuff(session, buffState);
                 session.DoublePayoutNextSpin = true;
-                session.StatusMessage = $"{buff.Emoji} Double Payout used! All money from the next Spin will be doubled.";
+                session.StatusMessage = BuildStatus(
+                    buff.Emoji,
+                    "Double Payout used! All money from the next Spin will be doubled.");
                 break;
 
             case "jackpot-boost":
                 if (session.JackpotBoostPending)
                 {
-                    session.StatusMessage = $"{buff.Emoji} Jackpot Boost is already waiting for your next 5-in-a-row.";
+                    session.StatusMessage = BuildStatus(
+                        buff.Emoji,
+                        "Jackpot Boost is already waiting for your next 5-in-a-row.");
                     return;
                 }
 
                 SpendBuff(session, buffState);
                 session.JackpotBoostPending = true;
-                session.StatusMessage =
-                    $"{buff.Emoji} Jackpot Boost used! Your next new 5-in-a-row payout will be x{JackpotBoostMultiplier}.";
+                session.StatusMessage = BuildStatus(
+                    buff.Emoji,
+                    $"Jackpot Boost used! Your next new 5-in-a-row payout will be x{JackpotBoostMultiplier}.");
                 break;
 
             case "perfect-spin":
                 if (session.PerfectSpinNextSpin)
                 {
-                    session.StatusMessage = $"{buff.Emoji} Perfect Spin is already armed.";
+                    session.StatusMessage = BuildStatus(buff.Emoji, "Perfect Spin is already armed.");
                     return;
                 }
 
                 SpendBuff(session, buffState);
                 session.PerfectSpinNextSpin = true;
-                session.StatusMessage = $"{buff.Emoji} Perfect Spin armed! Your next spin will exactly match the solution board.";
+                session.StatusMessage = BuildStatus(
+                    buff.Emoji,
+                    "Perfect Spin armed! Your next spin will exactly match the solution board.");
                 break;
 
             default:
-                session.StatusMessage = $"{buff.Emoji} {buff.Name} is not implemented yet.";
+                session.StatusMessage = BuildStatus(buff.Emoji, $"{buff.Name} is not implemented yet.");
                 break;
         }
     }
@@ -678,7 +690,9 @@ internal sealed class DailySlotsGame
         // Wildcards use -2 and are still valid targets for shifts/rerolls.
         if (currentSymbol == -1)
         {
-            session.StatusMessage = "That cell does not contain a slot symbol yet.";
+            session.StatusMessage = BuildStatus(
+                buff.Emoji,
+                "That cell does not contain a slot symbol yet.");
             return;
         }
 
@@ -686,7 +700,7 @@ internal sealed class DailySlotsGame
         if (buff.Id == "wild" && currentSymbol == WildSymbolIndex)
         {
             session.PendingTargetBuffId = null;
-            session.StatusMessage = $"{buff.Emoji} That symbol is already a Wildcard.";
+            session.StatusMessage = BuildStatus(buff.Emoji, "That symbol is already a Wildcard.");
             return;
         }
 
@@ -750,8 +764,7 @@ internal sealed class DailySlotsGame
                     buff,
                     $"Symbol {FormatSlotSymbol(oldSymbol)} became a Wildcard {buff.Emoji}",
                     wildResult,
-                    newlySolved ? 1 : 0,
-                    prependBuffEmoji: false);
+                    newlySolved ? 1 : 0);
                 break;
 
             default:
@@ -760,7 +773,7 @@ internal sealed class DailySlotsGame
                 // definition is accidentally misconfigured.
                 session.Balance += buff.Cost;
                 buffState.UsesRemaining++;
-                session.StatusMessage = $"{buff.Name} is not implemented yet.";
+                session.StatusMessage = BuildStatus(buff.Emoji, $"{buff.Name} is not implemented yet.");
                 break;
         }
     }
@@ -807,9 +820,18 @@ internal sealed class DailySlotsGame
         string actionText,
         bool checkSolution)
     {
-        int newlyRevealed = checkSolution
-            ? RevealNaturalSolutionHits(session)
-            : 0;
+        int newlyRevealed = 0;
+
+        if (checkSolution)
+        {
+            newlyRevealed += RevealNaturalSolutionHits(session);
+
+            // A Wildcard is a persistent board piece. If a shift moves one onto an
+            // unrevealed solution position, that new position is solved immediately.
+            // This lets players deliberately move a Wildcard around the board to
+            // uncover additional cells.
+            newlyRevealed += RevealWildcardSolutionHits(session);
+        }
 
         if (newlyRevealed > 0)
             session.Balance += (long)newlyRevealed * SolutionRevealReward;
@@ -827,16 +849,11 @@ internal sealed class DailySlotsGame
         DailyBuffDefinition buff,
         string actionText,
         PaylinePayoutResult result,
-        int newlyRevealed = 0,
-        bool prependBuffEmoji = true)
+        int newlyRevealed = 0)
     {
         var status = new StringBuilder(180);
-
-        if (prependBuffEmoji)
-        {
-            status.Append(buff.Emoji);
-            status.Append(' ');
-        }
+        status.Append(buff.Emoji);
+        status.Append(" • ");
 
         AppendSentence(status, actionText);
 
@@ -891,7 +908,7 @@ internal sealed class DailySlotsGame
             _ => $"{buff.Name} selected — choose a target symbol."
         };
 
-        return $"{buff.Emoji} {prompt}";
+        return BuildStatus(buff.Emoji, prompt);
     }
 
     private static void SpendBuff(
@@ -962,7 +979,7 @@ internal sealed class DailySlotsGame
         long totalPayout = spinPayout + solutionReward;
 
         var status = new StringBuilder(160);
-        status.Append("🎰 Spin complete.");
+        status.Append("🎰 • Spin complete.");
 
         if (newlyRevealed > 0)
         {
@@ -1032,6 +1049,28 @@ internal sealed class DailySlotsGame
         }
 
         return hitsToReveal;
+    }
+
+    private static int RevealWildcardSolutionHits(DailySlotsSession session)
+    {
+        int newlyRevealed = 0;
+
+        for (int row = 0; row < BoardSize; row++)
+        {
+            for (int column = 0; column < BoardSize; column++)
+            {
+                if (session.RevealedSolutionCells[row, column] ||
+                    session.SlotSymbolIndexes[row, column] != WildSymbolIndex)
+                {
+                    continue;
+                }
+
+                session.RevealedSolutionCells[row, column] = true;
+                newlyRevealed++;
+            }
+        }
+
+        return newlyRevealed;
     }
 
     private static int RevealNaturalSolutionHits(DailySlotsSession session)
@@ -1608,7 +1647,7 @@ internal sealed class DailySlotsGame
         public long Balance { get; set; }
         public int SpinsRemaining { get; set; } = MaxSpins;
         public bool HasSpunAtLeastOnce { get; set; }
-        public string StatusMessage { get; set; } = "🎰 Spin slots to begin.";
+        public string StatusMessage { get; set; } = "🎰 • Spin slots to begin.";
         public string? PendingTargetBuffId { get; set; }
         public int GuaranteedSolutionHitsNextSpin { get; set; }
         public bool DoublePayoutNextSpin { get; set; }
@@ -1642,7 +1681,7 @@ internal sealed class DailySlotsGame
             Balance = 0;
             SpinsRemaining = MaxSpins;
             HasSpunAtLeastOnce = false;
-            StatusMessage = "🎰 Spin slots to begin.";
+            StatusMessage = "🎰 • Spin slots to begin.";
             PendingTargetBuffId = null;
             GuaranteedSolutionHitsNextSpin = 0;
             DoublePayoutNextSpin = false;
