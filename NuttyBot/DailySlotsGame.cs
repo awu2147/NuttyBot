@@ -300,7 +300,39 @@ internal sealed class DailySlotsGame
         .WithName("slotsdaily")
         .WithDescription("Play today's Daily Slots board");
 
-    public async Task HandleSlashCommandAsync(SocketSlashCommand command)
+    public static SlashCommandBuilder CreateSeededCommand() => new SlashCommandBuilder()
+        .WithName("slotsdailyseeded")
+        .WithDescription("Play Daily Slots with a specific buff rotation seed")
+        .AddOption(
+            "seed",
+            ApplicationCommandOptionType.Integer,
+            "Seed used to choose the 10 available buffs",
+            isRequired: true);
+
+    public Task HandleSlashCommandAsync(SocketSlashCommand command) =>
+        OpenLobbyAsync(command, explicitBuffRotationSeed: null);
+
+    public async Task HandleSeededSlashCommandAsync(SocketSlashCommand command)
+    {
+        SocketSlashCommandDataOption? seedOption = command.Data.Options
+            .FirstOrDefault(option => option.Name == "seed");
+
+        if (seedOption?.Value is not long seedValue ||
+            seedValue < int.MinValue ||
+            seedValue > int.MaxValue)
+        {
+            await command.RespondAsync(
+                $"Seed must be a whole number between {int.MinValue:N0} and {int.MaxValue:N0}.",
+                ephemeral: true);
+            return;
+        }
+
+        await OpenLobbyAsync(command, (int)seedValue);
+    }
+
+    private async Task OpenLobbyAsync(
+        SocketSlashCommand command,
+        int? explicitBuffRotationSeed)
     {
         if (!command.GuildId.HasValue)
         {
@@ -319,7 +351,11 @@ internal sealed class DailySlotsGame
                 command.User.Id,
                 Guid.NewGuid().ToString("N"));
 
-            session.InitializeDailyBuffSelection();
+            if (explicitBuffRotationSeed.HasValue)
+                session.InitializeBuffSelection(explicitBuffRotationSeed.Value);
+            else
+                session.InitializeDailyBuffSelection();
+
             _sessions[(session.GuildId, session.UserId)] = session;
         }
 
@@ -2542,12 +2578,14 @@ internal sealed class DailySlotsGame
 
     private static DailyBuffDefinition[] BuildBuffRotation()
     {
-        // Read once per newly-created lobby. We intentionally do not cache this value:
-        // editing daily-slots-buff-seed.txt while the bot is running changes the next
-        // /slotsdaily lobby immediately, while already-open lobbies keep their offer.
-        int rotationSeed = ReadBuffRotationSeed();
+        // Read once per newly-created normal lobby. We intentionally do not cache this
+        // value: editing daily-slots-buff-seed.txt while the bot is running changes the
+        // next /slotsdaily lobby immediately, while already-open lobbies keep their offer.
+        return BuildBuffRotation(ReadBuffRotationSeed());
+    }
 
-        return BuffDefinitions
+    private static DailyBuffDefinition[] BuildBuffRotation(int rotationSeed) =>
+        BuffDefinitions
             .Select(buff => (
                 Buff: buff,
                 SortKey: GetBuffRotationSortKey(buff.Id, rotationSeed)))
@@ -2556,7 +2594,6 @@ internal sealed class DailySlotsGame
             .Take(DailyBuffOfferCount)
             .Select(entry => entry.Buff)
             .ToArray();
-    }
 
     private static int ReadBuffRotationSeed()
     {
@@ -2676,16 +2713,22 @@ internal sealed class DailySlotsGame
         public int SolutionRevealValue { get; set; } = BaseSolutionRevealReward;
         public long NextSlotTokenId { get; set; } = 1;
 
-        public void InitializeDailyBuffSelection()
+        public void InitializeDailyBuffSelection() =>
+            InitializeBuffSelection(BuildBuffRotation());
+
+        public void InitializeBuffSelection(int rotationSeed) =>
+            InitializeBuffSelection(BuildBuffRotation(rotationSeed));
+
+        private void InitializeBuffSelection(DailyBuffDefinition[] rotation)
         {
             if (AvailableBuffIds.Length > 0)
                 return;
 
-            DailyBuffDefinition[] rotation = BuildBuffRotation();
             AvailableBuffIds = rotation.Select(buff => buff.Id).ToArray();
 
-            // Always open the selection lobby at 0/4. The daily/seeded rotation
-            // controls which 10 buffs are offered, but the player chooses all four.
+            // Always open the selection lobby at 0/4. The file-backed or explicit
+            // seeded rotation controls which 10 buffs are offered, but the player
+            // chooses all four.
             SelectedBuffIds.Clear();
         }
 

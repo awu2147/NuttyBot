@@ -153,6 +153,7 @@ namespace NuttyBot
                 var slotLeaderboardCommand = SlotGame.CreateLeaderboardCommand();
                 var slotPayoutsCommand = SlotGame.CreatePayoutsCommand();
                 var dailySlotsCommand = DailySlotsGame.CreateCommand();
+                var dailySlotsSeededCommand = DailySlotsGame.CreateSeededCommand();
 
                 if (!existingCommands.Any(x => x.Name == "addemoji"))
                 {
@@ -182,6 +183,11 @@ namespace NuttyBot
                 if (!existingCommands.Any(x => x.Name == "slotsdaily"))
                 {
                     await guild.CreateApplicationCommandAsync(dailySlotsCommand.Build());
+                }
+
+                if (!existingCommands.Any(x => x.Name == "slotsdailyseeded"))
+                {
+                    await guild.CreateApplicationCommandAsync(dailySlotsSeededCommand.Build());
                 }
 #if false
                 var oldSlotCommand = existingCommands.FirstOrDefault(x => x.Name == "rollslots");
@@ -228,6 +234,10 @@ namespace NuttyBot
 
                 case "slotsdaily":
                     await DailySlots.HandleSlashCommandAsync(command);
+                    break;
+
+                case "slotsdailyseeded":
+                    await DailySlots.HandleSeededSlashCommandAsync(command);
                     break;
             }
         }
