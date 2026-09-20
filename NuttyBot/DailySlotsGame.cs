@@ -1538,40 +1538,35 @@ internal sealed class DailySlotsGame
             .WithTextDisplay("## 🎰 Daily Slots 🎰")
             .WithTextDisplay($"**Select buffs to begin ({selectedCount}/{MaxSelectedBuffs})**");
 
-        for (int row = 0; row < 2; row++)
+        // Discord performs text wrapping on the client, and trailing whitespace-like
+        // glyphs do not reliably reserve rendered width/height. Keep the lobby
+        // deterministic instead: descriptions that need two lines are split explicitly.
+        // If any description uses a second line, every other buff receives one blank
+        // second description line so all Sections have the same height.
+        string[][] descriptionLines = BuffDefinitions
+            .Select(GetBuffSelectionDescriptionLines)
+            .ToArray();
+
+        bool useSecondDescriptionLine = descriptionLines.Any(lines => lines.Length > 1);
+
+        for (int index = 0; index < BuffDefinitions.Length; index++)
         {
-            var actionRow = new ActionRowBuilder();
+            DailyBuffDefinition buff = BuffDefinitions[index];
+            bool selected = session.SelectedBuffIds.Contains(buff.Id);
 
-            for (int column = 0; column < 5; column++)
-            {
-                DailyBuffDefinition buff = BuffDefinitions[(row * 5) + column];
-                bool selected = session.SelectedBuffIds.Contains(buff.Id);
+            var selectButton = new ButtonBuilder()
+                .WithLabel(selected ? "Selected" : "Select")
+                .WithCustomId(
+                    $"slotsdaily:buff:{session.UserId}:{session.SessionId}:{buff.Id}")
+                .WithStyle(selected ? ButtonStyle.Success : ButtonStyle.Secondary);
 
-                var button = new ButtonBuilder()
-                    .WithLabel(buff.Emoji)
-                    .WithCustomId(
-                        $"slotsdaily:buff:{session.UserId}:{session.SessionId}:{buff.Id}")
-                    .WithStyle(selected ? ButtonStyle.Success : ButtonStyle.Secondary);
-
-                actionRow.WithButton(button);
-            }
-
-            container.WithActionRow(actionRow);
-        }
-
-        DailyBuffDefinition[] selectedBuffs = GetSelectedBuffDefinitions(session);
-
-        if (selectedBuffs.Length > 0)
-        {
-            string descriptions = string.Join(
-                "\n",
-                selectedBuffs.Select(buff =>
-                    $"{buff.Emoji} **{buff.Name}** — " +
-                    $"Cost: ${buff.Cost:N0} • " +
-                    $"Use Count: {buff.UseCount} • " +
-                    $"Effect: {buff.Effect}"));
-
-            container.WithTextDisplay(descriptions);
+            container.WithSection(
+                new SectionBuilder()
+                    .WithTextDisplay(BuildBuffSelectionSectionText(
+                        buff,
+                        descriptionLines[index],
+                        useSecondDescriptionLine))
+                    .WithAccessory(selectButton));
         }
 
         bool canStart = selectedCount == MaxSelectedBuffs;
@@ -1588,6 +1583,48 @@ internal sealed class DailySlotsGame
         return new ComponentBuilderV2()
             .WithContainer(container)
             .Build();
+    }
+
+    private const string BlankDescriptionLine = "\u2800";
+
+    private static string[] GetBuffSelectionDescriptionLines(DailyBuffDefinition buff) =>
+        buff.Id switch
+        {
+            "row-left" => ["Shift selected row left by", "one."],
+            "row-right" => ["Shift selected row right by", "one."],
+            "column-up" => ["Shift selected column up by", "one."],
+            "column-down" => ["Shift selected column down", "by one."],
+            "reroll" => ["Reroll one selected symbol."],
+            "lucky-spin" => ["Reveal 1 extra solution next", "spin."],
+            "wild" => ["Solve 1 cell and make it Wild."],
+            "double-payout" => ["Double your next Spin payout."],
+            "jackpot-boost" => [$"Next new jackpot payout ×{JackpotBoostMultiplier}."],
+            "perfect-spin" => ["Next spin matches the", "solution."],
+            _ => [buff.Effect]
+        };
+
+    private static string BuildBuffSelectionSectionText(
+        DailyBuffDefinition buff,
+        string[] descriptionLines,
+        bool useSecondDescriptionLine)
+    {
+        string useText = buff.UseCount == 1 ? "1 use" : $"{buff.UseCount} uses";
+
+        var builder = new StringBuilder(160);
+        builder.AppendLine($"{buff.Emoji} **{buff.Name}**");
+        builder.AppendLine($"-# ${buff.Cost:N0} • {useText}");
+        builder.Append($"-# {descriptionLines[0]}");
+
+        if (useSecondDescriptionLine)
+        {
+            builder.AppendLine();
+            builder.Append("-# ");
+            builder.Append(descriptionLines.Length > 1
+                ? descriptionLines[1]
+                : BlankDescriptionLine);
+        }
+
+        return builder.ToString();
     }
 
     private static MessageComponent BuildGameView(DailySlotsSession session)
